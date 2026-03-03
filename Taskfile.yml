@@ -1,0 +1,65 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  setup:
+    desc: First-time setup (prereqs, venv, npm install, hooks)
+    cmds:
+      - ./scripts/setup.sh
+
+  start:
+    desc: Start Stargate (API + UI)
+    cmds:
+      - ./scripts/start.sh
+
+  stop:
+    desc: Stop Stargate
+    cmds:
+      - ./scripts/stop.sh
+
+  install:
+    desc: Install all dependencies
+    cmds:
+      - cd backend && python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+      - cd frontend && npm install
+
+  build:
+    desc: Build frontend for production
+    cmds:
+      - cd frontend && npm run build
+
+  run:
+    desc: Start both API and UI (legacy, use 'task start' instead)
+    cmds:
+      - ./scripts/start.sh
+
+  test:
+    desc: Run all tests (backend + E2E)
+    cmds:
+      - task: test:backend
+      - task: test:e2e
+
+  test:backend:
+    desc: Run backend pytest integration tests
+    cmds:
+      - cd backend && source venv/bin/activate && python -m pytest tests/ -v {{.CLI_ARGS}}
+
+  test:e2e:
+    desc: Run Playwright E2E tests
+    dir: frontend
+    cmds:
+      - npx playwright test {{.CLI_ARGS}}
+
+  lint:
+    desc: Run linter
+    cmds:
+      - cd backend && source venv/bin/activate && ruff check app/ || true
+
+  smoke:
+    desc: Run smoke tests against live API
+    cmds:
+      - cd backend && source venv/bin/activate && python ../scripts/smoke_test.py {{.CLI_ARGS}}
