@@ -115,29 +115,19 @@ export function ChatView() {
 
       setSendError(null)
 
-      const optimisticId = `user-${Date.now()}`
-      const userMsg: Message = {
-        id: optimisticId,
-        session_id: id,
-        role: 'user',
-        content,
-        is_complete: true,
-        created_at: new Date().toISOString(),
-      }
-
-      setMessages((prev) => [...prev, userMsg])
       try {
         await sendMessage(id, content, images)
+        // Server persists the user message synchronously before spawning
+        // Claude, so re-fetch to show the server-authoritative version.
+        const msgs = await getMessages(id)
+        const filtered = msgs.filter(
+          (m) => !(m.status === 'streaming' && !m.content?.trim())
+        )
+        setMessages(filtered)
       } catch (err) {
         const errMsg =
           err instanceof Error ? err.message : 'Failed to send message'
         setSendError(errMsg)
-        // Mark the optimistic message as failed
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === optimisticId ? { ...m, _failed: true } : m
-          )
-        )
       }
     },
     [id]

@@ -32,9 +32,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         className={cn(
           'max-w-[90%] md:max-w-[70%] rounded-xl px-3.5 py-2.5 md:px-4 md:py-3',
           isUser
-            ? message._failed
-              ? 'bg-red-500/10 text-text-primary border border-red-400/30'
-              : 'bg-accent/15 text-text-primary border border-accent/20'
+            ? 'bg-accent/15 text-text-primary border border-accent/20'
             : interrupted
               ? 'bg-surface-secondary text-text-primary border border-amber-500/30'
               : 'bg-surface-secondary text-text-primary border border-border'
@@ -93,12 +91,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         )}
 
-        {/* Failed send indicator */}
-        {message._failed && (
-          <div className="mt-1.5 text-xs text-red-400 font-medium">
-            Failed to send
-          </div>
-        )}
       </div>
     </div>
   )

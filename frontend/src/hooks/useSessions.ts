@@ -50,5 +50,15 @@ export function useSessions(): UseSessionsReturn {
     refresh()
   }, [refresh])
 
+  // Re-fetch sessions when the app returns from background so cross-device
+  // session creation is immediately visible without a hard refresh.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refresh()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [refresh])
+
   return { sessions, isLoading, error, refresh, create, remove }
 }

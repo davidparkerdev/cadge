@@ -19,8 +19,6 @@ export interface Message {
   is_complete: boolean
   status?: MessageStatus
   created_at: string
-  /** Set client-side when an optimistic send fails */
-  _failed?: boolean
 }
 
 export interface ToolCall {

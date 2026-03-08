@@ -56,7 +56,7 @@ class MessageResponse(BaseModel):
     session_id: str
     role: str
     content: str
-    tool_calls: Optional[str] = None
+    tool_calls: Optional[list] = None
     thinking: Optional[str] = None
     is_complete: bool
     status: str = "complete"

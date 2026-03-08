@@ -30,7 +30,7 @@ class StreamBroker:
     queue so it sees the full stream even if it connected late.
     """
 
-    def __init__(self, replay_buffer_size: int = 200) -> None:
+    def __init__(self, replay_buffer_size: int = 2000) -> None:
         # session_id -> set of asyncio.Queue
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
         # session_id -> list of events from the current streaming run
