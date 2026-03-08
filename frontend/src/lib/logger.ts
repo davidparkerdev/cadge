@@ -28,7 +28,11 @@ const buffer: LogEntry[] = []
 
 const API_URL =
   typeof window !== 'undefined'
-    ? `${window.location.protocol}//${window.location.hostname}:33401`
+    ? (() => {
+        const host = window.location.hostname
+        const port = host.endsWith('.ts.net') ? 43401 : 33401
+        return `${window.location.protocol}//${host}:${port}`
+      })()
     : ''
 
 function formatError(err: unknown): string | undefined {

@@ -24,11 +24,17 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const agentsRef = useRef<AgentInfo[]>([])
   const currentToolNameRef = useRef<string>('')
+  // Incrementing this triggers the SSE effect to re-run, creating a new
+  // EventSource. Used for reconnection after CLOSED state.
+  const [reconnectTrigger, setReconnectTrigger] = useState(0)
 
   const clearError = useCallback(() => setError(null), [])
 
   useEffect(() => {
     if (!sessionId || sessionId === 'new') return
+
+    let cleanedUp = false
+    let reconnectTimer: number | undefined
 
     const url = `${API_URL}/api/sessions/${sessionId}/stream`
     log.info('sse', `Connecting to ${url}`)
@@ -232,20 +238,58 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
       setIsConnected(false)
       if (eventSource.readyState === EventSource.CLOSED) {
         log.error('sse', `Connection closed: session=${sessionId}`)
-        setError('Stream connection lost')
+        setError('Stream connection lost — reconnecting...')
         setIsStreaming(false)
+
+        // Auto-reconnect: EventSource CLOSED state is permanent (no browser
+        // retry). This commonly happens on iOS when the app backgrounds.
+        // Create a new EventSource after a short delay.
+        reconnectTimer = window.setTimeout(() => {
+          if (!cleanedUp) {
+            log.info('sse', `Reconnecting to session=${sessionId}`)
+            setReconnectTrigger((n) => n + 1)
+          }
+        }, 2000)
       } else {
         log.warn('sse', `Connection error (will retry): session=${sessionId}`)
       }
     }
 
+    // When the app returns from background (iOS PWA / Capacitor), the SSE
+    // connection is likely dead. Re-establish it on visibility change.
+    const handleVisibilityChange = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        eventSource.readyState === EventSource.CLOSED &&
+        !cleanedUp
+      ) {
+        log.info('sse', `App foregrounded with dead SSE, reconnecting: session=${sessionId}`)
+        setReconnectTrigger((n) => n + 1)
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
     return () => {
+      cleanedUp = true
       log.info('sse', `Disconnecting: session=${sessionId}`)
       eventSource.close()
       eventSourceRef.current = null
       setIsConnected(false)
+      // Clear stale streaming state on disconnect/reconnect.
+      // Without this, reconnecting after iOS background leaves
+      // streamingMessage populated with partial content from the
+      // previous connection, causing ghost messages.
+      setStreamingMessage(null)
+      setIsStreaming(false)
+      contentRef.current = ''
+      thinkingRef.current = ''
+      toolCallsRef.current = []
+      agentsRef.current = []
+      setAgents([])
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
     }
-  }, [sessionId])
+  }, [sessionId, reconnectTrigger])
 
   return { streamingMessage, isStreaming, isConnected, error, clearError, agents }
 }

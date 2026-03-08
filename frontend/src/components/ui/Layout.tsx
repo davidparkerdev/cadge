@@ -55,7 +55,7 @@ export function Layout({ className, children, ...props }: LayoutProps) {
   return (
     <SidebarContext.Provider value={{ isOpen, open, close, toggle }}>
       <div
-        className={cn('flex h-screen bg-surface-primary', className)}
+        className={cn('flex h-screen bg-surface-primary safe-area-top', className)}
         {...props}
       >
         {children}
@@ -97,8 +97,8 @@ export function Sidebar({
         className={cn(
           // Base
           'bg-surface-secondary border-r border-border flex flex-col z-50',
-          // Mobile: fixed overlay that slides in/out
-          'fixed inset-y-0 left-0 transition-transform duration-200 ease-in-out',
+          // Mobile: fixed overlay that slides in/out, with safe area for notch
+          'fixed inset-y-0 left-0 transition-transform duration-200 ease-in-out safe-area-top',
           isOpen ? 'translate-x-0' : '-translate-x-full',
           // Desktop (md+): static position, always visible, no transform
           'md:static md:translate-x-0 md:transition-none',

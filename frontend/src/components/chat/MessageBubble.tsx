@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { NavArrowDown, NavArrowRight } from 'iconoir-react'
+import { NavArrowDown, NavArrowRight, WarningTriangle } from 'iconoir-react'
 import { cn } from '../../lib/cn'
 import type { Message } from '../../api/types'
 import { ToolCallCard } from './ToolCallCard'
@@ -8,9 +8,18 @@ interface MessageBubbleProps {
   message: Message
 }
 
+/** True when the message was saved from an interrupted or errored stream. */
+function isInterrupted(message: Message): boolean {
+  return (
+    message.role === 'assistant' &&
+    (message.status === 'incomplete' || message.status === 'error')
+  )
+}
+
 export function MessageBubble({ message }: MessageBubbleProps) {
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const isUser = message.role === 'user'
+  const interrupted = isInterrupted(message)
 
   return (
     <div
@@ -23,8 +32,12 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         className={cn(
           'max-w-[90%] md:max-w-[70%] rounded-xl px-3.5 py-2.5 md:px-4 md:py-3',
           isUser
-            ? 'bg-accent/15 text-text-primary border border-accent/20'
-            : 'bg-surface-secondary text-text-primary border border-border'
+            ? message._failed
+              ? 'bg-red-500/10 text-text-primary border border-red-400/30'
+              : 'bg-accent/15 text-text-primary border border-accent/20'
+            : interrupted
+              ? 'bg-surface-secondary text-text-primary border border-amber-500/30'
+              : 'bg-surface-secondary text-text-primary border border-border'
         )}
       >
         {/* Thinking block (assistant only) */}
@@ -67,6 +80,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         {message.content?.trim() && (
           <div className="text-sm whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
             {message.content.trim()}
+          </div>
+        )}
+
+        {/* Interrupted / incomplete response indicator */}
+        {interrupted && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400 font-medium">
+            <WarningTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+            {message.status === 'error'
+              ? 'Response encountered an error'
+              : 'Response was interrupted'}
+          </div>
+        )}
+
+        {/* Failed send indicator */}
+        {message._failed && (
+          <div className="mt-1.5 text-xs text-red-400 font-medium">
+            Failed to send
           </div>
         )}
       </div>

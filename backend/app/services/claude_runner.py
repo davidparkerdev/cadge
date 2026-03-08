@@ -13,12 +13,14 @@ import json
 import logging
 import os
 import tempfile
+import time
 from typing import Optional
 
 from app.services.session_store import (
     create_message,
+    delete_message as _delete_message,
     get_session,
-    list_messages,
+    mark_claude_initialized,
     touch_session,
     update_message,
 )
@@ -111,10 +113,9 @@ async def _run_claude(
     # Check if this session has been used before. First call uses --session-id
     # to create the CLI session; subsequent calls use --resume to continue it
     # (--session-id permanently claims the session and rejects further use).
-    # The route handler saves the user message before spawning this task, so
-    # for the very first message there's exactly 1 row; for subsequent, 3+.
-    existing_messages = await list_messages(session_id, limit=3)
-    is_first_message = len(existing_messages) <= 1
+    # We use a persistent flag on the session instead of counting messages,
+    # because message counts can be wrong after placeholder deletions.
+    is_first_message = not session.get("claude_initialized", False)
 
     # Prepend role context on the first message if a role is set
     if role and role in ROLE_PROMPTS and is_first_message:
@@ -140,7 +141,9 @@ async def _run_claude(
         image_paths: list[str] = []
         for i, b64 in enumerate(images):
             try:
-                data = base64.b64decode(b64)
+                # Strip data URI prefix (e.g. "data:image/jpeg;base64,...")
+                raw_b64 = b64.split(",", 1)[-1] if "," in b64 else b64
+                data = base64.b64decode(raw_b64)
                 suffix = ".png"
                 fd, path = tempfile.mkstemp(suffix=suffix, prefix=f"nexus_img_{i}_")
                 os.write(fd, data)
@@ -194,8 +197,31 @@ async def _run_claude(
     # Strip CLAUDECODE env var so the CLI doesn't think it's nested
     clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
+    # How often to flush accumulated content to the DB (seconds)
+    PERIODIC_SAVE_INTERVAL = 5.0
+
     process: Optional[asyncio.subprocess.Process] = None
+    assistant_msg_id: Optional[str] = None
+
+    # Declare accumulators outside try so the except handler can access them
+    full_content_parts: list[str] = []
+    tool_calls: list[dict] = []
+    thinking_parts: list[str] = []
+    stderr_task: Optional[asyncio.Task] = None
+
     try:
+        # Create a placeholder assistant message in the DB BEFORE streaming
+        # starts. This ensures we always have a record, even if the process
+        # is killed or the app crashes mid-stream.
+        placeholder = await create_message(
+            session_id=session_id,
+            role="assistant",
+            content="",
+            is_complete=False,
+            status="streaming",
+        )
+        assistant_msg_id = placeholder["id"]
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -205,21 +231,45 @@ async def _run_claude(
         )
         _active_processes[session_id] = process
 
-        # Accumulate the final assistant message content
-        full_content_parts: list[str] = []
-        tool_calls: list[dict] = []
-        thinking_parts: list[str] = []
-
         # Track interactive tool calls for structured events
         current_tool_name: str | None = None
         current_tool_id: str | None = None
         current_tool_json_parts: list[str] = []
         running_agents: dict[str, dict] = {}  # tool_use_id -> agent info
 
+        # Drain stderr concurrently to prevent pipe buffer deadlock.
+        # If stderr fills its 64KB buffer, the subprocess blocks and
+        # stdout never reaches EOF -- hanging this loop forever.
+        stderr_parts: list[bytes] = []
+
+        async def _drain_stderr():
+            assert process.stderr is not None
+            while True:
+                chunk = await process.stderr.read(4096)
+                if not chunk:
+                    break
+                stderr_parts.append(chunk)
+
+        stderr_task = asyncio.create_task(_drain_stderr())
+
+        # Track last periodic save time
+        last_save_time = time.monotonic()
+        last_saved_content_len = 0
+
         # Read stdout line by line
         assert process.stdout is not None
         while True:
-            line = await process.stdout.readline()
+            try:
+                line = await asyncio.wait_for(
+                    process.stdout.readline(), timeout=300.0  # 5 min per-line
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "claude process stalled (no output for 5 min) for session %s",
+                    session_id,
+                )
+                process.kill()
+                break
             if not line:
                 break
             text = line.decode("utf-8", errors="replace").strip()
@@ -239,17 +289,19 @@ async def _run_claude(
             # Accumulate content for persistence
             event_type = event.get("type", "")
             if event_type == "assistant":
-                # Full assistant message (streaming chunks or final)
+                # The assistant event carries the FULL assembled message.
+                # Text and thinking content are already accumulated from
+                # content_block_delta events, so we must NOT append them
+                # here -- doing so would DOUBLE the content in the DB.
+                # We only extract tool_use blocks (which contain the
+                # complete tool input) and process tool_result for agent
+                # tracking.
                 content = event.get("message", {}).get("content", "")
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict):
-                            if block.get("type") == "text":
-                                full_content_parts.append(block.get("text", ""))
-                            elif block.get("type") == "tool_use":
+                            if block.get("type") == "tool_use":
                                 tool_calls.append(block)
-                            elif block.get("type") == "thinking":
-                                thinking_parts.append(block.get("thinking", ""))
                             elif block.get("type") == "tool_result":
                                 tool_use_id = block.get("tool_use_id")
                                 if tool_use_id and tool_use_id in running_agents:
@@ -270,8 +322,6 @@ async def _run_claude(
                                         "isError": block.get("is_error", False),
                                     })
                                     running_agents.pop(tool_use_id, None)
-                elif isinstance(content, str):
-                    full_content_parts.append(content)
             elif event_type == "content_block_delta":
                 delta = event.get("delta", {})
                 if delta.get("type") == "text_delta":
@@ -314,37 +364,68 @@ async def _run_claude(
                 current_tool_id = None
                 current_tool_json_parts = []
 
+            # Periodically flush accumulated content to the DB so partial
+            # responses survive crashes. Only save if new content arrived.
+            now_mono = time.monotonic()
+            current_content_len = len(full_content_parts)
+            if (
+                now_mono - last_save_time >= PERIODIC_SAVE_INTERVAL
+                and current_content_len > last_saved_content_len
+                and assistant_msg_id
+            ):
+                try:
+                    partial_content = "".join(full_content_parts).strip()
+                    await update_message(
+                        assistant_msg_id,
+                        content=partial_content,
+                        thinking="".join(thinking_parts) if thinking_parts else None,
+                        tool_calls=json.dumps(tool_calls) if tool_calls else None,
+                    )
+                    last_save_time = now_mono
+                    last_saved_content_len = current_content_len
+                except Exception:
+                    logger.warning(
+                        "Failed periodic save for message %s", assistant_msg_id,
+                        exc_info=True,
+                    )
+
         await process.wait()
 
-        # Read stderr if non-zero exit
-        stderr_text = ""
-        if process.returncode != 0 and process.stderr:
-            stderr_bytes = await process.stderr.read()
-            stderr_text = stderr_bytes.decode("utf-8", errors="replace").strip()
+        # Wait for stderr drain task to finish
+        await stderr_task
+        stderr_text = b"".join(stderr_parts).decode("utf-8", errors="replace").strip()
+        if process.returncode != 0 and stderr_text:
             logger.warning(
                 "claude process exited %d for session %s: %s",
                 process.returncode, session_id, stderr_text,
             )
 
-        # Save the assistant message
+        # Mark session as initialized so subsequent calls use --resume
+        if is_first_message:
+            await mark_claude_initialized(session_id)
+
+        # Finalize the assistant message
         final_content = "".join(full_content_parts).strip()
         if final_content or tool_calls:
-            await create_message(
-                session_id=session_id,
-                role="assistant",
+            await update_message(
+                assistant_msg_id,
                 content=final_content,
                 tool_calls=json.dumps(tool_calls) if tool_calls else None,
                 thinking="".join(thinking_parts) if thinking_parts else None,
                 is_complete=True,
+                status="complete",
             )
         elif process.returncode != 0:
-            # Store the error
-            await create_message(
-                session_id=session_id,
-                role="assistant",
+            # Store the error in the existing placeholder
+            await update_message(
+                assistant_msg_id,
                 content=f"[Error] claude exited with code {process.returncode}: {stderr_text}",
                 is_complete=True,
+                status="error",
             )
+        else:
+            # No content and no error -- remove the empty placeholder
+            await _delete_message(assistant_msg_id)
 
         # Mark any remaining running agents as completed
         for tool_id, agent_info in list(running_agents.items()):
@@ -367,6 +448,23 @@ async def _run_claude(
 
     except Exception:
         logger.exception("Error running claude for session %s", session_id)
+        # Mark the placeholder message as incomplete so it's preserved
+        if assistant_msg_id:
+            try:
+                partial_content = "".join(full_content_parts).strip()
+                await update_message(
+                    assistant_msg_id,
+                    content=partial_content or "[Error] Stream interrupted unexpectedly",
+                    thinking="".join(thinking_parts) if thinking_parts else None,
+                    tool_calls=json.dumps(tool_calls) if tool_calls else None,
+                    is_complete=True,
+                    status="error",
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to save error state for message %s", assistant_msg_id,
+                    exc_info=True,
+                )
         session_broker.publish(session_id, {
             "type": "error",
             "session_id": session_id,
@@ -374,6 +472,13 @@ async def _run_claude(
         })
     finally:
         _active_processes.pop(session_id, None)
+        # Cancel stderr drain if still running
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+            try:
+                await stderr_task
+            except (asyncio.CancelledError, Exception):
+                pass
         # Clean up temp image files
         for path in temp_files:
             try:

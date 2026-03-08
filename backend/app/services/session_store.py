@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls  TEXT,
     thinking    TEXT,
     is_complete BOOLEAN NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'complete',
     created_at  TEXT NOT NULL
 );
 
@@ -74,6 +75,30 @@ async def init_db() -> None:
                 await db.commit()
             except Exception:
                 pass  # Column already exists
+
+        # Migrate: add status column to messages if it doesn't exist
+        try:
+            await db.execute(
+                "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'complete'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migrate: add claude_initialized flag to sessions
+        try:
+            await db.execute(
+                "ALTER TABLE sessions ADD COLUMN claude_initialized BOOLEAN NOT NULL DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Fix any messages left in 'streaming' status from a previous crash
+        await db.execute(
+            "UPDATE messages SET status = 'incomplete' WHERE status = 'streaming'"
+        )
+        await db.commit()
 
     logger.info("SQLite database initialized at %s", DB_PATH)
 
@@ -177,6 +202,16 @@ async def touch_session(session_id: str) -> None:
         await db.commit()
 
 
+async def mark_claude_initialized(session_id: str) -> None:
+    """Mark that this session has been used with --session-id (first CLI call done)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "UPDATE sessions SET claude_initialized = 1 WHERE id = ?",
+            (session_id,),
+        )
+        await db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
@@ -188,6 +223,7 @@ async def create_message(
     tool_calls: Optional[str] = None,
     thinking: Optional[str] = None,
     is_complete: bool = True,
+    status: str = "complete",
 ) -> dict:
     now = _now()
     msg = {
@@ -198,12 +234,13 @@ async def create_message(
         "tool_calls": tool_calls,
         "thinking": thinking,
         "is_complete": is_complete,
+        "status": status,
         "created_at": now,
     }
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
-            """INSERT INTO messages (id, session_id, role, content, tool_calls, thinking, is_complete, created_at)
-               VALUES (:id, :session_id, :role, :content, :tool_calls, :thinking, :is_complete, :created_at)""",
+            """INSERT INTO messages (id, session_id, role, content, tool_calls, thinking, is_complete, status, created_at)
+               VALUES (:id, :session_id, :role, :content, :tool_calls, :thinking, :is_complete, :status, :created_at)""",
             msg,
         )
         await db.commit()
@@ -223,6 +260,13 @@ async def update_message(message_id: str, **fields) -> None:
             f"UPDATE messages SET {set_clause} WHERE id = ?",
             values,
         )
+        await db.commit()
+
+
+async def delete_message(message_id: str) -> None:
+    """Delete a single message by ID."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
         await db.commit()
 
 

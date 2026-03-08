@@ -21,6 +21,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(errMsg)
   }
 
+  // 204 No Content — nothing to parse
+  if (res.status === 204) {
+    return undefined as T
+  }
+
   return res.json()
 }
 
@@ -54,7 +59,7 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
 }
 
 export async function deleteSession(id: string): Promise<void> {
-  await fetch(`${API_URL}/api/sessions/${id}`, { method: 'DELETE' })
+  await request<void>(`/api/sessions/${id}`, { method: 'DELETE' })
 }
 
 // Messages
@@ -72,9 +77,8 @@ export async function sendMessage(
   if (images && images.length > 0) {
     body.images = images
   }
-  await fetch(`${API_URL}/api/sessions/${sessionId}/messages`, {
+  await request<void>(`/api/sessions/${sessionId}/messages`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
 }

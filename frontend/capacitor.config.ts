@@ -12,7 +12,7 @@ const config: CapacitorConfig = {
   },
   server: {
     // Point to Tailscale IP for development
-    url: 'http://100.67.60.42:33400',
+    url: 'https://davids-mac-mini.taild30c55.ts.net:43400',
     cleartext: true,
   },
 };

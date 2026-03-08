@@ -14,6 +14,7 @@ export function ChatView() {
   const navigate = useNavigate()
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
+  const [sendError, setSendError] = useState<string | null>(null)
 
   const { streamingMessage, isStreaming, error, agents } = useSSE(id)
   const prevIsStreaming = useRef(false)
@@ -45,7 +46,13 @@ export function ChatView() {
     getMessages(id)
       .then((msgs) => {
         if (!cancelled) {
-          setMessages(msgs)
+          // Filter out empty placeholder messages left by active or crashed streams.
+          // These have status='streaming' with no content -- the real streamed content
+          // comes via SSE. Non-empty streaming messages are kept (periodic saves).
+          const filtered = msgs.filter(
+            (m) => !(m.status === 'streaming' && !m.content?.trim())
+          )
+          setMessages(filtered)
         }
       })
       .catch(() => {
@@ -67,18 +74,50 @@ export function ChatView() {
   useEffect(() => {
     if (prevIsStreaming.current && !isStreaming && id) {
       getMessages(id)
-        .then((msgs) => setMessages(msgs))
+        .then((msgs) => {
+          const filtered = msgs.filter(
+            (m) => !(m.status === 'streaming' && !m.content?.trim())
+          )
+          setMessages(filtered)
+        })
         .catch(() => {})
     }
     prevIsStreaming.current = isStreaming
   }, [isStreaming, id])
 
+  // When the app returns from background (iOS PWA / Capacitor), refetch
+  // messages so the user always sees the latest state. Without this, if
+  // Claude responded while the app was backgrounded, the user sees stale
+  // messages until they navigate away and back.
+  useEffect(() => {
+    if (!id) return
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        getMessages(id)
+          .then((msgs) => {
+            const filtered = msgs.filter(
+              (m) => !(m.status === 'streaming' && !m.content?.trim())
+            )
+            setMessages(filtered)
+          })
+          .catch(() => {})
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [id])
+
   const handleSend = useCallback(
     async (content: string, images?: string[]) => {
       if (!id) return
 
+      setSendError(null)
+
+      const optimisticId = `user-${Date.now()}`
       const userMsg: Message = {
-        id: `user-${Date.now()}`,
+        id: optimisticId,
         session_id: id,
         role: 'user',
         content,
@@ -89,8 +128,16 @@ export function ChatView() {
       setMessages((prev) => [...prev, userMsg])
       try {
         await sendMessage(id, content, images)
-      } catch {
-        // Could show an error state here
+      } catch (err) {
+        const errMsg =
+          err instanceof Error ? err.message : 'Failed to send message'
+        setSendError(errMsg)
+        // Mark the optimistic message as failed
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === optimisticId ? { ...m, _failed: true } : m
+          )
+        )
       }
     },
     [id]
@@ -133,6 +180,14 @@ export function ChatView() {
         </div>
       )}
 
+      {sendError && (
+        <div className="px-4 py-2 text-center">
+          <p className="text-sm text-red-400">
+            Failed to send message: {sendError}
+          </p>
+        </div>
+      )}
+
       <div className="hidden md:block">
         <ChatInput onSend={handleSend} disabled={inputDisabled} />
       </div>
@@ -142,6 +197,9 @@ export function ChatView() {
           onScrollToBottom={scrollToBottom}
           disabled={inputDisabled}
           lastAssistantMessage={lastAssistantMessage}
+          isStreaming={isStreaming}
+          streamingMessage={streamingMessage}
+          agents={agents}
         />
       </div>
     </div>

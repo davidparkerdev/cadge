@@ -6,7 +6,11 @@ export interface Project {
   dir: string
 }
 
-const SERVICE_MANAGER_URL = `${window.location.protocol}//${window.location.hostname}:33901`
+const SERVICE_MANAGER_URL = (() => {
+  const host = window.location.hostname
+  const port = host.endsWith('.ts.net') ? 43901 : 33901
+  return `${window.location.protocol}//${host}:${port}`
+})()
 
 export function useProjects() {
   const [projects, setProjects] = useState<Project[]>([])

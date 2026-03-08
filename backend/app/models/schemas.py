@@ -59,6 +59,7 @@ class MessageResponse(BaseModel):
     tool_calls: Optional[str] = None
     thinking: Optional[str] = None
     is_complete: bool
+    status: str = "complete"
     created_at: str
 
 

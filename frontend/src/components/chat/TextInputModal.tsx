@@ -47,7 +47,7 @@ export function TextInputModal({
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-surface-primary/95 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex flex-col bg-surface-primary/95 backdrop-blur-sm safe-area-top">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <button

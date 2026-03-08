@@ -1,11 +1,9 @@
-import { useNavigate } from 'react-router-dom'
 import { Plus } from 'iconoir-react'
 import { cn } from '../../lib/cn'
 import { useSessionsContext } from '../../contexts/SessionsContext'
 import { SessionItem } from '../sessions/SessionItem'
 
 export function HomeView() {
-  const navigate = useNavigate()
   const { sessions, remove } = useSessionsContext()
 
   const handleDelete = async (id: string) => {

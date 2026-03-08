@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --port 33400",
     "build": "tsc && vite build",
-    "build:cap": "VITE_API_URL=http://100.67.60.42:33401 vite build --base /",
+    "build:cap": "VITE_API_URL=https://davids-mac-mini.taild30c55.ts.net:43401 vite build --base /",
     "cap:ios": "npx cap open ios",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"

@@ -51,6 +51,8 @@ export interface UseVoiceInputReturn {
   startRecording: () => void
   stopRecording: () => string
   cancelRecording: () => void
+  forceReleaseMic: () => void
+  cleanup: () => void
   isSupported: boolean
   error: string | null
 }
@@ -73,6 +75,11 @@ export function useVoiceInput(): UseVoiceInputReturn {
   const isRecordingRef = useRef(false)
   const mountedRef = useRef(true)
   const transcriptRef = useRef('')
+  // Accumulated final text from previous recognition sessions (iOS restarts).
+  // When iOS auto-stops and restarts, each new session has fresh results.
+  // We snapshot the current transcriptRef into accumulatedRef so that
+  // the next onresult can append to it instead of overwriting.
+  const accumulatedRef = useRef('')
   const restartCountRef = useRef(0)
 
   const isSupported =
@@ -95,20 +102,28 @@ export function useVoiceInput(): UseVoiceInputReturn {
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         if (!mountedRef.current) return
 
-        let finalText = ''
+        let sessionFinalText = ''
         let interimText = ''
 
         for (let i = 0; i < event.results.length; i++) {
           const result = event.results[i]
           if (result.isFinal) {
-            finalText += result[0].transcript
+            sessionFinalText += result[0].transcript
           } else {
             interimText += result[0].transcript
           }
         }
 
-        transcriptRef.current = finalText
-        setTranscript(finalText)
+        // On iOS (continuous=false), recognition auto-stops after silence
+        // and restarts via onend. Each restart creates a new recognition
+        // session with fresh results, so we must ACCUMULATE final text
+        // across restarts rather than overwriting.
+        if (sessionFinalText) {
+          // Only append genuinely new final text (avoid duplicates from
+          // the same recognition session re-firing onresult).
+          transcriptRef.current = accumulatedRef.current + sessionFinalText
+        }
+        setTranscript(transcriptRef.current)
         setInterimTranscript(interimText)
       }
 
@@ -125,22 +140,30 @@ export function useVoiceInput(): UseVoiceInputReturn {
       recognition.onend = () => {
         if (!mountedRef.current) return
 
-        // If still supposed to be recording and within restart limit,
-        // restart to handle silence auto-stop (especially on iOS)
-        if (
-          isRecordingRef.current &&
-          restartCountRef.current < MAX_RESTART_ATTEMPTS
-        ) {
+        // If the user has stopped recording (isRecordingRef is false),
+        // do NOT restart. Just clean up and exit.
+        if (!isRecordingRef.current) {
+          if (mountedRef.current) {
+            setIsRecording(false)
+          }
+          return
+        }
+
+        // Still supposed to be recording -- restart to handle silence
+        // auto-stop (especially on iOS), but respect the restart limit.
+        // Snapshot accumulated text so the next onresult can append to it.
+        accumulatedRef.current = transcriptRef.current
+        if (restartCountRef.current < MAX_RESTART_ATTEMPTS) {
           restartCountRef.current++
           try {
             recognition.start()
           } catch {
+            isRecordingRef.current = false
             if (mountedRef.current) {
               setIsRecording(false)
             }
-            isRecordingRef.current = false
           }
-        } else if (isRecordingRef.current) {
+        } else {
           // Max restarts reached -- stop to prevent infinite loop
           isRecordingRef.current = false
           if (mountedRef.current) {
@@ -163,6 +186,7 @@ export function useVoiceInput(): UseVoiceInputReturn {
     setTranscript('')
     setInterimTranscript('')
     transcriptRef.current = ''
+    accumulatedRef.current = ''
     restartCountRef.current = 0
     isRecordingRef.current = true
     setIsRecording(true)
@@ -187,6 +211,10 @@ export function useVoiceInput(): UseVoiceInputReturn {
   }, [getRecognition])
 
   const stopRecording = useCallback((): string => {
+    // Capture the transcript BEFORE doing anything else
+    const finalTranscript = transcriptRef.current
+
+    // Signal that we intend to stop - prevents onend from restarting
     isRecordingRef.current = false
     setIsRecording(false)
     setInterimTranscript('')
@@ -194,13 +222,17 @@ export function useVoiceInput(): UseVoiceInputReturn {
     const recognition = recognitionRef.current
     if (recognition) {
       try {
-        recognition.stop()
+        // Use abort() instead of stop() to immediately release the microphone.
+        // stop() is async and keeps the mic locked while it processes remaining audio.
+        // We already have the accumulated transcript in transcriptRef, so we don't
+        // need the final onresult that stop() would trigger.
+        recognition.abort()
       } catch {
         // Already stopped
       }
     }
 
-    return transcriptRef.current
+    return finalTranscript
   }, [])
 
   const cancelRecording = useCallback(() => {
@@ -209,6 +241,7 @@ export function useVoiceInput(): UseVoiceInputReturn {
     setTranscript('')
     setInterimTranscript('')
     transcriptRef.current = ''
+    accumulatedRef.current = ''
 
     const recognition = recognitionRef.current
     if (recognition) {
@@ -218,6 +251,75 @@ export function useVoiceInput(): UseVoiceInputReturn {
         // Already stopped
       }
     }
+  }, [])
+
+  // Force-release the microphone regardless of current state.
+  // Use this when you need to guarantee the mic is freed (e.g., before
+  // another app needs it).
+  const forceReleaseMic = useCallback(() => {
+    isRecordingRef.current = false
+    setIsRecording(false)
+    setInterimTranscript('')
+
+    const recognition = recognitionRef.current
+    if (recognition) {
+      try {
+        recognition.abort()
+      } catch {
+        // Already stopped
+      }
+      // Destroy the instance so a fresh one is created next time
+      recognitionRef.current = null
+    }
+  }, [])
+
+  // Full cleanup: abort recognition, null out the instance, clear all state.
+  // Call this on component unmount.
+  const cleanup = useCallback(() => {
+    isRecordingRef.current = false
+    setIsRecording(false)
+    setTranscript('')
+    setInterimTranscript('')
+    transcriptRef.current = ''
+    accumulatedRef.current = ''
+
+    const recognition = recognitionRef.current
+    if (recognition) {
+      try {
+        recognition.abort()
+      } catch {
+        // Already stopped
+      }
+      recognitionRef.current = null
+    }
+  }, [])
+
+  // Release the microphone when the app goes to background.
+  // On iOS, backgrounding doesn't unmount components or close the webview,
+  // so the SpeechRecognition stays active and locks the system mic.
+  // Other apps (including Nexus v1) can't record until we release it.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && isRecordingRef.current) {
+        // Force-release: abort + destroy the instance so iOS fully frees the mic
+        isRecordingRef.current = false
+        setIsRecording(false)
+        setInterimTranscript('')
+        const recognition = recognitionRef.current
+        if (recognition) {
+          try {
+            recognition.abort()
+          } catch {
+            // Already stopped
+          }
+          // Destroy instance -- iOS only truly releases the mic when the
+          // SpeechRecognition object is garbage collected
+          recognitionRef.current = null
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [])
 
   // Track mounted state and clean up on unmount
@@ -233,6 +335,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
         } catch {
           // Already stopped
         }
+        // Null out the instance so the mic is fully released
+        recognitionRef.current = null
       }
     }
   }, [])
@@ -244,6 +348,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
     startRecording,
     stopRecording,
     cancelRecording,
+    forceReleaseMic,
+    cleanup,
     isSupported,
     error,
   }

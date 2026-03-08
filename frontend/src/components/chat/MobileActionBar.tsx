@@ -19,7 +19,10 @@ import {
   GitCommit,
   Minus,
   Erase,
+  Activity,
+  Tools,
 } from 'iconoir-react'
+import type { Message, AgentInfo } from '../../api/types'
 import { cn } from '../../lib/cn'
 import { useSessionsContext } from '../../contexts/SessionsContext'
 import { useVoiceInput } from '../../hooks/useVoiceInput'
@@ -34,6 +37,9 @@ interface MobileActionBarProps {
   onScrollToBottom: () => void
   disabled?: boolean
   lastAssistantMessage?: string
+  isStreaming?: boolean
+  streamingMessage?: Message | null
+  agents?: AgentInfo[]
 }
 
 export function MobileActionBar({
@@ -41,6 +47,9 @@ export function MobileActionBar({
   onScrollToBottom,
   disabled = false,
   lastAssistantMessage,
+  isStreaming = false,
+  streamingMessage,
+  agents = [],
 }: MobileActionBarProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -50,6 +59,8 @@ export function MobileActionBar({
   const [isTextModalOpen, setIsTextModalOpen] = useState(false)
   const [isCommandsOpen, setIsCommandsOpen] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
+  const [showStream, setShowStream] = useState(false)
+  const [showTools, setShowTools] = useState(false)
 
   // Order matters: grid fills left-to-right in 4 cols.
   // Row 1: [empty] [empty] Hide Cmds   (pinned, not in this array)
@@ -150,10 +161,10 @@ export function MobileActionBar({
     let content = ''
 
     if (voice.isRecording) {
-      // Use the visible displayText (includes both final + interim transcript)
-      // instead of stopRecording()'s return value, because on iOS the final
-      // onresult event fires AFTER stop() returns, making the ref empty.
+      // Capture the transcript FIRST from React state (includes both final + interim).
+      // This must happen BEFORE stopRecording(), which calls abort() and clears state.
       content = (voice.transcript + ' ' + voice.interimTranscript).trim()
+      // Now stop recording -- this uses abort() to immediately release the mic
       voice.stopRecording()
     } else {
       content = typedText.trim()
@@ -276,14 +287,117 @@ export function MobileActionBar({
               </div>
             )}
 
+            {/* Stream detail panel */}
+            {showStream && (
+              <div className="mx-3 mt-2 bg-surface-tertiary rounded-lg border border-border max-h-40 overflow-y-auto">
+                <div className="px-3 py-2">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-xs font-semibold text-teal-400 uppercase tracking-wide">Stream</span>
+                    {isStreaming && <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />}
+                  </div>
+                  {streamingMessage?.thinking && (
+                    <div className="mb-2">
+                      <span className="text-xs font-medium text-amber-400">Thinking:</span>
+                      <p className="text-xs text-text-secondary mt-0.5 whitespace-pre-wrap break-words leading-relaxed">
+                        {streamingMessage.thinking.slice(-500)}
+                      </p>
+                    </div>
+                  )}
+                  {streamingMessage?.content ? (
+                    <p className="text-xs text-text-secondary whitespace-pre-wrap break-words leading-relaxed">
+                      {streamingMessage.content.slice(-500)}
+                    </p>
+                  ) : isStreaming ? (
+                    <p className="text-xs text-text-secondary">Waiting for response...</p>
+                  ) : (
+                    <p className="text-xs text-text-secondary">No active stream</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Tools detail panel */}
+            {showTools && (
+              <div className="mx-3 mt-2 bg-surface-tertiary rounded-lg border border-border max-h-40 overflow-y-auto">
+                <div className="px-3 py-2">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-xs font-semibold text-purple-400 uppercase tracking-wide">Tools</span>
+                  </div>
+                  {streamingMessage?.tool_calls && streamingMessage.tool_calls.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {streamingMessage.tool_calls.map((tc, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className={cn(
+                            'w-1.5 h-1.5 rounded-full flex-shrink-0',
+                            tc.status === 'running' ? 'bg-amber-400 animate-pulse' :
+                            tc.status === 'completed' ? 'bg-green-400' : 'bg-red-400'
+                          )} />
+                          <span className="text-xs font-medium text-text-primary">{tc.name}</span>
+                          <span className="text-xs text-text-secondary">{tc.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : agents && agents.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {agents.map((a) => (
+                        <div key={a.toolUseId} className="flex items-center gap-2">
+                          <span className={cn(
+                            'w-1.5 h-1.5 rounded-full flex-shrink-0',
+                            a.status === 'running' ? 'bg-amber-400 animate-pulse' :
+                            a.status === 'completed' ? 'bg-green-400' : 'bg-red-400'
+                          )} />
+                          <span className="text-xs font-medium text-text-primary">{a.description}</span>
+                          <span className="text-xs text-text-secondary">{a.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-text-secondary">No active tools</p>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Unified action grid */}
             <div className="grid grid-cols-4 gap-2 p-3">
 
-              {/* Row 1: Hide + Cmds -- ALWAYS first, pinned to cols 3-4 */}
+              {/* Row 1: Stream, Tools, Hide, Cmds */}
+              <button
+                type="button"
+                onClick={() => { setShowStream(!showStream); if (!showStream) setShowTools(false) }}
+                className={cn(
+                  btnBase,
+                  showStream
+                    ? 'bg-teal-500/30 text-teal-300 ring-1 ring-teal-500/40'
+                    : 'bg-teal-500/15 text-teal-400',
+                  !isStreaming && !streamingMessage?.content && 'opacity-40'
+                )}
+                aria-label={showStream ? 'Hide stream' : 'Show stream'}
+              >
+                <Activity className="w-6 h-6" />
+                <span>Stream</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setShowTools(!showTools); if (!showTools) setShowStream(false) }}
+                className={cn(
+                  btnBase,
+                  showTools
+                    ? 'bg-purple-500/30 text-purple-300 ring-1 ring-purple-500/40'
+                    : 'bg-purple-500/15 text-purple-400',
+                  !streamingMessage?.tool_calls?.length && !(agents && agents.length > 0) && 'opacity-40'
+                )}
+                aria-label={showTools ? 'Hide tools' : 'Show tools'}
+              >
+                <Tools className="w-6 h-6" />
+                <span>Tools</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setIsCollapsed(true)}
-                className={cn(btnBase, 'bg-gray-500/20 text-gray-400 col-start-3')}
+                className={cn(btnBase, 'bg-gray-500/20 text-gray-400')}
                 aria-label="Collapse action bar"
               >
                 <Minus className="w-6 h-6" />

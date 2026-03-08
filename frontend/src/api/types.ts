@@ -7,6 +7,8 @@ export interface Session {
   updated_at: string
 }
 
+export type MessageStatus = 'complete' | 'streaming' | 'incomplete' | 'error'
+
 export interface Message {
   id: string
   session_id: string
@@ -15,7 +17,10 @@ export interface Message {
   tool_calls?: ToolCall[]
   thinking?: string
   is_complete: boolean
+  status?: MessageStatus
   created_at: string
+  /** Set client-side when an optimistic send fails */
+  _failed?: boolean
 }
 
 export interface ToolCall {

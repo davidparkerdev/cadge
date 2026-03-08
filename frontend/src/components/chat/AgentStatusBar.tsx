@@ -113,7 +113,7 @@ function AgentCard({ agent }: { agent: AgentInfo }) {
 
 function AgentTimer({ agent }: { agent: AgentInfo }) {
   const [elapsed, setElapsed] = useState(0)
-  const intervalRef = useRef<ReturnType<typeof setInterval>>()
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined)
 
   useEffect(() => {
     if (agent.status === 'running') {
