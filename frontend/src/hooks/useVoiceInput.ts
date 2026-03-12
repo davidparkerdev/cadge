@@ -63,7 +63,10 @@ const isIOS =
   typeof navigator !== 'undefined' &&
   /iPad|iPhone|iPod/.test(navigator.userAgent)
 
-const MAX_RESTART_ATTEMPTS = 5
+// iOS Safari auto-stops recognition after each silence gap. Each restart counts.
+// 5 was too low -- users pausing between sentences exhausted it in under a minute.
+// 30 allows ~2-3 minutes of natural speech with pauses.
+const MAX_RESTART_ATTEMPTS = 30
 
 export function useVoiceInput(): UseVoiceInputReturn {
   const [isRecording, setIsRecording] = useState(false)
@@ -135,6 +138,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
         setError(event.error)
         setIsRecording(false)
         isRecordingRef.current = false
+        // Destroy the instance so iOS fully releases the mic on error
+        recognitionRef.current = null
       }
 
       recognition.onend = () => {
@@ -159,6 +164,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
             recognition.start()
           } catch {
             isRecordingRef.current = false
+            // Destroy the instance to release the mic on failed restart
+            recognitionRef.current = null
             if (mountedRef.current) {
               setIsRecording(false)
             }
@@ -166,6 +173,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
         } else {
           // Max restarts reached -- stop to prevent infinite loop
           isRecordingRef.current = false
+          // Destroy the instance so iOS fully releases the mic
+          recognitionRef.current = null
           if (mountedRef.current) {
             setIsRecording(false)
           }
@@ -230,6 +239,11 @@ export function useVoiceInput(): UseVoiceInputReturn {
       } catch {
         // Already stopped
       }
+      // Destroy the instance so iOS fully releases the system mic.
+      // Without this, the mic stays locked even after abort() and other
+      // apps (like Nexus v1) can't record until the user force-quits.
+      // A fresh instance is created automatically on next startRecording().
+      recognitionRef.current = null
     }
 
     return finalTranscript
@@ -250,6 +264,8 @@ export function useVoiceInput(): UseVoiceInputReturn {
       } catch {
         // Already stopped
       }
+      // Destroy instance to fully release the mic on iOS
+      recognitionRef.current = null
     }
   }, [])
 

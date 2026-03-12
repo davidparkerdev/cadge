@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -68,6 +68,11 @@ async def init_db() -> None:
         await db.executescript(_CREATE_TABLES)
         await db.commit()
 
+        # Enable WAL mode for concurrent read/write access.
+        # Eliminates "database is locked" errors under load.
+        await db.execute("PRAGMA journal_mode=WAL;")
+        await db.commit()
+
         # Migrate: add new columns if they don't exist (for existing databases)
         for col in ["role", "project_name", "project_dir"]:
             try:
@@ -90,6 +95,13 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE sessions ADD COLUMN claude_initialized BOOLEAN NOT NULL DEFAULT 0"
             )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migrate: add summary column to messages
+        try:
+            await db.execute("ALTER TABLE messages ADD COLUMN summary TEXT")
             await db.commit()
         except Exception:
             pass  # Column already exists
@@ -192,6 +204,20 @@ async def delete_session(session_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+async def update_session(session_id: str, title: str) -> Optional[dict]:
+    """Update the session title and updated_at timestamp. Returns updated session or None."""
+    now = _now()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+            (title, now, session_id),
+        )
+        await db.commit()
+        if cursor.rowcount == 0:
+            return None
+    return await get_session(session_id)
+
+
 async def touch_session(session_id: str) -> None:
     """Update the updated_at timestamp."""
     async with aiosqlite.connect(str(DB_PATH)) as db:
@@ -270,12 +296,12 @@ async def delete_message(message_id: str) -> None:
         await db.commit()
 
 
-async def list_messages(session_id: str, limit: int = 100) -> list[dict]:
+async def list_messages(session_id: str, limit: int = 200, offset: int = 0) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
-            (session_id, limit),
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            (session_id, limit, offset),
         )
         rows = await cursor.fetchall()
     # Deserialize tool_calls from JSON string to list
@@ -288,9 +314,64 @@ async def list_messages(session_id: str, limit: int = 100) -> list[dict]:
     return rows  # type: ignore[return-value]
 
 
+async def count_messages(session_id: str) -> int:
+    """Return the total number of messages for a session."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM messages WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
 # ---------------------------------------------------------------------------
 # Hook Events
 # ---------------------------------------------------------------------------
+
+async def cleanup_old_hook_events(max_age_days: int = 7) -> int:
+    """Delete hook events older than max_age_days. Returns count of deleted rows."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM hook_events WHERE created_at < ?", (cutoff,)
+        )
+        await db.commit()
+        deleted = cursor.rowcount
+    if deleted > 0:
+        logger.info("Cleaned up %d hook events older than %d days", deleted, max_age_days)
+    return deleted
+
+
+async def list_hook_events(
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """Return recent hook events with pagination. Returns (events, total_count)."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        # Get total count
+        cursor = await db.execute("SELECT COUNT(*) FROM hook_events")
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+
+        # Get paginated results
+        db.row_factory = _row_to_dict  # type: ignore[assignment]
+        cursor = await db.execute(
+            "SELECT * FROM hook_events ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+
+    # Deserialize payload from JSON string to dict
+    for row in rows:
+        if row.get("payload") and isinstance(row["payload"], str):
+            try:
+                row["payload"] = json.loads(row["payload"])
+            except (json.JSONDecodeError, TypeError):
+                row["payload"] = {}
+
+    return rows, total  # type: ignore[return-value]
+
 
 async def create_hook_event(
     event_type: Optional[str] = None,

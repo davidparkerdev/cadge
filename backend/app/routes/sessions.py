@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.models.schemas import SessionCreate, SessionDetail, SessionResponse
-from app.services import session_store
+from app.models.schemas import SessionCreate, SessionDetail, SessionResponse, SessionUpdate
+from app.services import claude_runner, session_store
+from app.services.event_store import delete_session_events
+from app.services.stream_broker import session_broker
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
 
@@ -38,9 +40,33 @@ async def get_session(session_id: str):
     return detail
 
 
+@router.patch("/{session_id}", response_model=SessionResponse)
+async def update_session(session_id: str, body: SessionUpdate):
+    if not body.title or not body.title.strip():
+        raise HTTPException(status_code=422, detail="Title must be a non-empty string")
+    updated = await session_store.update_session(session_id, title=body.title.strip())
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return updated
+
+
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: str):
+    # Cancel any running subprocess before deleting DB rows
+    await claude_runner.cancel_session(session_id)
+    # Close all SSE subscribers for this session
+    session_broker.close_session(session_id)
+    # Delete persisted events for this session
+    await delete_session_events(session_id)
     deleted = await session_store.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return None
+
+
+@router.post("/{session_id}/cancel")
+async def cancel_session(session_id: str):
+    """Cancel a running Claude subprocess."""
+    was_running = await claude_runner.cancel_session(session_id)
+    status = "cancelled" if was_running else "not_running"
+    return {"status": status, "session_id": session_id}

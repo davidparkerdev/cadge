@@ -24,6 +24,9 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const agentsRef = useRef<AgentInfo[]>([])
   const currentToolNameRef = useRef<string>('')
+  // Tracks whether we're between a `start` and `done`/`error` event.
+  // Used to preserve streaming state across transport-level reconnections.
+  const midStreamRef = useRef(false)
   // Incrementing this triggers the SSE effect to re-run, creating a new
   // EventSource. Used for reconnection after CLOSED state.
   const [reconnectTrigger, setReconnectTrigger] = useState(0)
@@ -56,10 +59,16 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
 
           case 'connected':
             setIsConnected(true)
-            // If the backend reports active streaming (we connected mid-stream),
+            // If the backend reports active streaming and we're NOT already
+            // mid-stream (i.e., this is a fresh join, not a reconnect),
             // initialize streaming state so the UI shows an indicator.
             // The replay buffer will deliver the actual content events next.
-            if (data.streaming && !streamingMessage) {
+            //
+            // If we ARE mid-stream (reconnecting after a transport drop),
+            // skip initialization — we preserved contentRef/thinkingRef/etc.
+            // across the reconnect, and the replayed `start` event will
+            // properly reinitialize from the full replay buffer.
+            if (data.streaming && !midStreamRef.current) {
               contentRef.current = ''
               thinkingRef.current = ''
               toolCallsRef.current = []
@@ -79,7 +88,10 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
 
           case 'start':
           case 'message_start':
-            // Start of assistant response — initialize streaming state
+            // Start of assistant response — initialize streaming state.
+            // This also fires on reconnect replay (server replays from `start`),
+            // which correctly resets refs so the replay rebuilds content.
+            midStreamRef.current = true
             contentRef.current = ''
             thinkingRef.current = ''
             toolCallsRef.current = []
@@ -193,6 +205,7 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
 
           case 'done':
           case 'message_stop':
+            midStreamRef.current = false
             // Stream complete — finalize remaining running agents
             agentsRef.current = agentsRef.current.map((a) =>
               a.status === 'running' ? { ...a, status: 'completed' as const, endTime: Date.now() } : a
@@ -219,11 +232,13 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
             break
 
           case 'cancelled':
+            midStreamRef.current = false
             setStreamingMessage(null)
             setIsStreaming(false)
             break
 
           case 'error':
+            midStreamRef.current = false
             log.error('sse', `Stream error: ${data.error || 'unknown'}`, data)
             setError(data.error || 'An unknown error occurred')
             setIsStreaming(false)
@@ -238,8 +253,12 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
       setIsConnected(false)
       if (eventSource.readyState === EventSource.CLOSED) {
         log.error('sse', `Connection closed: session=${sessionId}`)
-        setError('Stream connection lost — reconnecting...')
-        setIsStreaming(false)
+        // Only clear streaming state if we're NOT mid-stream.
+        // Mid-stream drops preserve the UI so content doesn't vanish.
+        if (!midStreamRef.current) {
+          setError('Stream connection lost — reconnecting...')
+          setIsStreaming(false)
+        }
 
         // Auto-reconnect: EventSource CLOSED state is permanent (no browser
         // retry). This commonly happens on iOS when the app backgrounds.
@@ -275,17 +294,27 @@ export function useSSE(sessionId: string | undefined): UseSSEReturn {
       eventSource.close()
       eventSourceRef.current = null
       setIsConnected(false)
-      // Clear stale streaming state on disconnect/reconnect.
-      // Without this, reconnecting after iOS background leaves
-      // streamingMessage populated with partial content from the
-      // previous connection, causing ghost messages.
-      setStreamingMessage(null)
-      setIsStreaming(false)
-      contentRef.current = ''
-      thinkingRef.current = ''
-      toolCallsRef.current = []
-      agentsRef.current = []
-      setAgents([])
+
+      if (midStreamRef.current) {
+        // Mid-stream reconnect: preserve streamingMessage and refs so the
+        // user doesn't see content vanish. The replayed `start` event from
+        // the new connection will reset refs, and replayed content deltas
+        // will rebuild the content quickly.
+        log.info('sse', `Mid-stream disconnect, preserving streaming state`)
+      } else {
+        // Not mid-stream: clear stale streaming state on disconnect.
+        // Without this, reconnecting after iOS background leaves
+        // streamingMessage populated with partial content from the
+        // previous connection, causing ghost messages.
+        setStreamingMessage(null)
+        setIsStreaming(false)
+        contentRef.current = ''
+        thinkingRef.current = ''
+        toolCallsRef.current = []
+        agentsRef.current = []
+        setAgents([])
+      }
+
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       if (reconnectTimer) clearTimeout(reconnectTimer)
     }

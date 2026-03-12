@@ -58,18 +58,23 @@ async def client(tmp_path):
     """
     db_path = str(tmp_path / "test.db")
 
-    with patch("app.services.session_store.DB_PATH", db_path):
+    with patch("app.services.session_store.DB_PATH", db_path), \
+         patch("app.services.event_store.DB_PATH", db_path):
         # Initialise the database schema (lifespan won't run under ASGITransport)
         from app.services.session_store import init_db
+        from app.services.event_store import init_events_table
         await init_db()
+        await init_events_table()
 
         with patch("app.routes.chat.claude_runner") as mock_runner:
             mock_runner.send_message = AsyncMock()
+            mock_runner.cancel_session = AsyncMock(return_value=False)
             mock_runner.is_session_streaming.return_value = False
             mock_runner.active_session_count.return_value = 0
 
-            # Also patch the health endpoint's reference to claude_runner
-            with patch("app.main.claude_runner", mock_runner):
+            # Also patch session routes and health endpoint references
+            with patch("app.routes.sessions.claude_runner", mock_runner), \
+                 patch("app.main.claude_runner", mock_runner):
                 from app.main import app
 
                 async with httpx.AsyncClient(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------------------------------------------------------------------------
@@ -17,6 +17,10 @@ class SessionCreate(BaseModel):
     role: Optional[str] = None          # e.g. "coding", "product", "writing"
     project_name: Optional[str] = None  # e.g. "nexus-v2"
     project_dir: Optional[str] = None   # e.g. "services/nexus-v2"
+
+
+class SessionUpdate(BaseModel):
+    title: Optional[str] = None
 
 
 class SessionResponse(BaseModel):
@@ -43,6 +47,13 @@ class MessageSend(BaseModel):
     content: str
     images: Optional[list[str]] = None  # base64 strings
 
+    @field_validator("content")
+    @classmethod
+    def content_must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("content must not be empty or whitespace-only")
+        return v
+
 
 class MessageAnswer(BaseModel):
     answer: str
@@ -60,6 +71,7 @@ class MessageResponse(BaseModel):
     thinking: Optional[str] = None
     is_complete: bool
     status: str = "complete"
+    summary: Optional[str] = None
     created_at: str
 
 

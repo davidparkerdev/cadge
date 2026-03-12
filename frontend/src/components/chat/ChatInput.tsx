@@ -1,13 +1,16 @@
 import { useState, useRef, useCallback, type KeyboardEvent } from 'react'
-import { SendDiagonal } from 'iconoir-react'
+import { SendDiagonal, Square } from 'iconoir-react'
 import { cn } from '../../lib/cn'
 
 interface ChatInputProps {
   onSend: (content: string) => void
   disabled?: boolean
+  isStreaming?: boolean
+  isCancelling?: boolean
+  onCancel?: () => void
 }
 
-export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
+export function ChatInput({ onSend, disabled = false, isStreaming = false, isCancelling = false, onCancel }: ChatInputProps) {
   const [value, setValue] = useState('')
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -61,21 +64,41 @@ export function ChatInput({ onSend, disabled = false }: ChatInputProps) {
             'transition-colors touch-manipulation'
           )}
         />
-        <button
-          type="button"
-          onClick={handleSend}
-          disabled={disabled || !value.trim()}
-          className={cn(
-            'flex items-center justify-center w-11 h-11 rounded-lg',
-            'bg-accent text-surface-primary',
-            'hover:bg-accent/90 active:bg-accent/80 transition-colors',
-            'disabled:opacity-40 disabled:cursor-not-allowed',
-            'flex-shrink-0 touch-manipulation'
-          )}
-          aria-label="Send message"
-        >
-          <SendDiagonal className="w-5 h-5" />
-        </button>
+        {isStreaming ? (
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={isCancelling}
+            className={cn(
+              'flex items-center justify-center w-11 h-11 rounded-lg',
+              isCancelling
+                ? 'bg-amber-500 text-white'
+                : 'bg-red-500 text-white',
+              'hover:opacity-90 active:opacity-80 transition-colors',
+              'disabled:opacity-40 disabled:cursor-not-allowed',
+              'flex-shrink-0 touch-manipulation'
+            )}
+            aria-label={isCancelling ? 'Cancelling' : 'Stop response'}
+          >
+            <Square className="w-5 h-5" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={disabled || !value.trim()}
+            className={cn(
+              'flex items-center justify-center w-11 h-11 rounded-lg',
+              'bg-accent text-surface-primary',
+              'hover:bg-accent/90 active:bg-accent/80 transition-colors',
+              'disabled:opacity-40 disabled:cursor-not-allowed',
+              'flex-shrink-0 touch-manipulation'
+            )}
+            aria-label="Send message"
+          >
+            <SendDiagonal className="w-5 h-5" />
+          </button>
+        )}
       </div>
     </div>
   )

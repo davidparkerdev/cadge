@@ -82,3 +82,10 @@ export async function sendMessage(
     body: JSON.stringify(body),
   })
 }
+
+// Cancel an active session (stops the Claude process)
+export async function cancelSession(sessionId: string): Promise<void> {
+  await request<void>(`/api/sessions/${sessionId}/cancel`, {
+    method: 'POST',
+  })
+}

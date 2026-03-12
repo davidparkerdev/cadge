@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Spinner } from '../ui/Spinner'
 import type { Message } from '../../api/types'
-import { getMessages, sendMessage } from '../../api/client'
-import { useSSE } from '../../hooks/useSSE'
+import { getMessages, sendMessage, cancelSession } from '../../api/client'
+import { useEventStream } from '../../hooks/useEventStream'
 import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { MobileActionBar } from './MobileActionBar'
@@ -16,13 +16,48 @@ export function ChatView() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
 
-  const { streamingMessage, isStreaming, error, agents } = useSSE(id)
+  const {
+    isStreaming,
+    isConnected: _isConnected,
+    error,
+    clearError: _clearError,
+    tools,
+    agents,
+    streamingContent,
+    streamingThinking,
+    summary,
+    lastSeq,
+  } = useEventStream(id)
+
+  const [isCancelling, setIsCancelling] = useState(false)
   const prevIsStreaming = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
+
+  // Build a streamingMessage from the event stream state for backward
+  // compat with MessageList and MobileActionBar
+  const streamingMessage: Message | null =
+    isStreaming || streamingContent
+      ? {
+          id: `streaming-${lastSeq}`,
+          session_id: id || '',
+          role: 'assistant',
+          content: streamingContent,
+          thinking: streamingThinking,
+          tool_calls: tools.map((t) => ({
+            name: t.name,
+            input: {},
+            status: t.status,
+          })),
+          is_complete: !isStreaming,
+          status: isStreaming ? 'streaming' : 'complete',
+          created_at: new Date().toISOString(),
+          summary: summary || undefined,
+        }
+      : null
 
   // Redirect to home if no valid session ID
   useEffect(() => {
@@ -70,9 +105,10 @@ export function ChatView() {
   }, [id])
 
   // When streaming ends via SSE, re-fetch messages from DB to ensure
-  // nothing was missed (e.g. reconnection gap).
+  // nothing was missed (e.g. reconnection gap). Also clear cancelling state.
   useEffect(() => {
     if (prevIsStreaming.current && !isStreaming && id) {
+      setIsCancelling(false)
       getMessages(id)
         .then((msgs) => {
           const filtered = msgs.filter(
@@ -84,6 +120,20 @@ export function ChatView() {
     }
     prevIsStreaming.current = isStreaming
   }, [isStreaming, id])
+
+  const handleCancel = useCallback(async () => {
+    if (!id || isCancelling) return
+    setIsCancelling(true)
+    try {
+      await cancelSession(id)
+      // The SSE stream will receive a 'cancelled' or 'done' event,
+      // which sets isStreaming=false and triggers the effect above
+      // to clear isCancelling.
+    } catch {
+      // If cancel API fails, reset cancelling state so user can retry
+      setIsCancelling(false)
+    }
+  }, [id, isCancelling])
 
   // When the app returns from background (iOS PWA / Capacitor), refetch
   // messages so the user always sees the latest state. Without this, if
@@ -106,7 +156,8 @@ export function ChatView() {
     }
 
     document.addEventListener('visibilitychange', handleVisibilityChange)
-    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
   }, [id])
 
   const handleSend = useCallback(
@@ -117,7 +168,7 @@ export function ChatView() {
 
       try {
         await sendMessage(id, content, images)
-        // Server persists the user message synchronously before spawning
+        // Server persists the user message synchronusly before spawning
         // Claude, so re-fetch to show the server-authoritative version.
         const msgs = await getMessages(id)
         const filtered = msgs.filter(
@@ -132,6 +183,10 @@ export function ChatView() {
     },
     [id]
   )
+
+  // Tool call visibility — toggled by the Tools button in MobileActionBar,
+  // controls whether ToolCallCards render inline in MessageBubble.
+  const [showToolCalls, setShowToolCalls] = useState(false)
 
   const inputDisabled = isStreaming
 
@@ -159,6 +214,8 @@ export function ChatView() {
           }
           isStreaming={isStreaming}
           bottomRef={bottomRef}
+          showToolCalls={showToolCalls}
+          tools={tools}
         />
       )}
 
@@ -179,7 +236,13 @@ export function ChatView() {
       )}
 
       <div className="hidden md:block">
-        <ChatInput onSend={handleSend} disabled={inputDisabled} />
+        <ChatInput
+          onSend={handleSend}
+          disabled={inputDisabled}
+          isStreaming={isStreaming}
+          isCancelling={isCancelling}
+          onCancel={handleCancel}
+        />
       </div>
       <div className="md:hidden">
         <MobileActionBar
@@ -188,8 +251,13 @@ export function ChatView() {
           disabled={inputDisabled}
           lastAssistantMessage={lastAssistantMessage}
           isStreaming={isStreaming}
+          isCancelling={isCancelling}
+          onCancel={handleCancel}
           streamingMessage={streamingMessage}
           agents={agents}
+          messages={messages}
+          showTools={showToolCalls}
+          onToggleTools={() => setShowToolCalls((v) => !v)}
         />
       </div>
     </div>

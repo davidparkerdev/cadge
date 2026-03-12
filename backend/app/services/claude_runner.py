@@ -12,10 +12,20 @@ import base64
 import json
 import logging
 import os
+import signal
+import subprocess as _subprocess
 import tempfile
 import time
 from typing import Optional
 
+from app.services.event_store import (
+    append_event,
+    STREAM_START, STREAM_END, STREAM_ERROR, STREAM_CANCELLED,
+    CONTENT_DELTA, THINKING_DELTA,
+    TOOL_START, TOOL_END,
+    AGENT_SPAWN, AGENT_COMPLETE,
+)
+from app.services.observatory_client import push_session_event
 from app.services.session_store import (
     create_message,
     delete_message as _delete_message,
@@ -41,6 +51,47 @@ def _get_session_lock(session_id: str) -> asyncio.Lock:
     if session_id not in _session_locks:
         _session_locks[session_id] = asyncio.Lock()
     return _session_locks[session_id]
+
+
+async def _kill_stale_claude_processes(claude_session_id: str) -> bool:
+    """Kill any orphaned claude CLI processes using this session ID.
+
+    This handles cases where the backend was restarted while a claude
+    process was still running — _active_processes was lost but the OS
+    process is still alive holding the CLI session lock.
+
+    Returns True if any processes were found and killed.
+    """
+    try:
+        # pgrep -f matches against the full command line
+        result = _subprocess.run(
+            ["pgrep", "-f", claude_session_id],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+            killed_any = False
+            for pid_str in pids:
+                try:
+                    pid = int(pid_str)
+                    # Don't kill ourselves
+                    if pid == os.getpid():
+                        continue
+                    os.kill(pid, signal.SIGTERM)
+                    logger.info(
+                        "Killed stale claude process %d for session %s",
+                        pid, claude_session_id,
+                    )
+                    killed_any = True
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+            if killed_any:
+                # Give processes time to exit and release CLI session locks
+                await asyncio.sleep(1.5)
+                return True
+    except Exception:
+        logger.debug("Failed to check for stale processes", exc_info=True)
+    return False
 
 
 # Base directory for resolving relative project_dir paths.
@@ -74,6 +125,37 @@ def is_session_streaming(session_id: str) -> bool:
     return session_id in _active_processes
 
 
+def _generate_summary(content: str, tool_calls: list[dict]) -> str:
+    """Generate a brief summary of what the assistant did.
+
+    For responses with tool calls: list the tools used + first line of content.
+    For conversational responses: first 200 chars of content.
+    """
+    if tool_calls:
+        tool_names = list(dict.fromkeys(tc.get("name", "unknown") for tc in tool_calls))
+        tools_str = ", ".join(tool_names[:5])
+        if len(tool_names) > 5:
+            tools_str += f" (+{len(tool_names) - 5} more)"
+        # Get first meaningful line of content
+        first_line = ""
+        if content:
+            for line in content.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#") and not line.startswith("```"):
+                    first_line = line[:150]
+                    break
+        if first_line:
+            return f"Used {tools_str}. {first_line}"
+        return f"Used {tools_str}"
+    elif content:
+        # Conversational -- first 200 chars
+        clean = content.strip()
+        if len(clean) > 200:
+            return clean[:197] + "..."
+        return clean
+    return ""
+
+
 async def send_message(
     session_id: str,
     prompt: str,
@@ -90,6 +172,8 @@ async def send_message(
     if lock.locked() and session_id in _active_processes:
         logger.info("Cancelling active process for session %s before sending new message", session_id)
         await cancel_session(session_id)
+        # Brief delay for the Claude CLI to release its session lock file
+        await asyncio.sleep(0.5)
 
     async with lock:
         await _run_claude(session_id, prompt, images)
@@ -99,6 +183,7 @@ async def _run_claude(
     session_id: str,
     prompt: str,
     images: Optional[list[str]] = None,
+    _retry_count: int = 0,
 ) -> None:
     """Inner implementation: spawn claude and stream output."""
     session = await get_session(session_id)
@@ -107,8 +192,31 @@ async def _run_claude(
         return
 
     claude_session_id = session["claude_session_id"]
+
+    # Proactively kill any orphaned claude processes for this session.
+    # This handles backend restarts where _active_processes was lost but
+    # the OS process is still alive holding the CLI session lock.
+    await _kill_stale_claude_processes(claude_session_id)
     role = session.get("role")
     project_dir = session.get("project_dir")
+    project_name = session.get("project_name")
+
+    # Push session start event to Observatory
+    push_session_event(
+        session_id=session_id,
+        event_type="start",
+        title=session.get("title", ""),
+        role=role,
+        project_name=project_name,
+        project_dir=project_dir,
+    )
+
+    # Track start time for duration computation
+    _start_mono = time.monotonic()
+
+    # Token tracking accumulators
+    _input_tokens: int = 0
+    _output_tokens: int = 0
 
     # Check if this session has been used before. First call uses --session-id
     # to create the CLI session; subsequent calls use --resume to continue it
@@ -184,6 +292,7 @@ async def _run_claude(
     cmd.extend([
         "--output-format", "stream-json",
         "--verbose",
+        "--dangerously-skip-permissions",
     ])
     for d in add_dirs:
         cmd.extend(["--add-dir", d])
@@ -222,12 +331,19 @@ async def _run_claude(
         )
         assistant_msg_id = placeholder["id"]
 
+        await append_event(session_id, STREAM_START, {
+            "message_id": assistant_msg_id,
+        })
+
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=clean_env,
             cwd=abs_project_dir,
+            # Default limit is 64KB which is too small for image-related
+            # JSON lines (base64 data, large tool outputs). 10MB is plenty.
+            limit=10 * 1024 * 1024,
         )
         _active_processes[session_id] = process
 
@@ -321,13 +437,24 @@ async def _run_claude(
                                         "result": result_text[:500],
                                         "isError": block.get("is_error", False),
                                     })
+                                    await append_event(session_id, AGENT_COMPLETE, {
+                                        "tool_use_id": tool_use_id,
+                                        "result": result_text[:500],
+                                        "is_error": block.get("is_error", False),
+                                    })
                                     running_agents.pop(tool_use_id, None)
             elif event_type == "content_block_delta":
                 delta = event.get("delta", {})
                 if delta.get("type") == "text_delta":
                     full_content_parts.append(delta.get("text", ""))
+                    await append_event(session_id, CONTENT_DELTA, {
+                        "text": delta.get("text", ""),
+                    })
                 elif delta.get("type") == "thinking_delta":
                     thinking_parts.append(delta.get("thinking", ""))
+                    await append_event(session_id, THINKING_DELTA, {
+                        "text": delta.get("thinking", ""),
+                    })
                 elif delta.get("type") == "input_json_delta":
                     if delta.get("partial_json"):
                         current_tool_json_parts.append(delta["partial_json"])
@@ -336,12 +463,32 @@ async def _run_claude(
                 result_text = event.get("result", "")
                 if result_text and not full_content_parts:
                     full_content_parts.append(result_text)
+                # Extract token usage from result event
+                usage = event.get("usage") or event.get("usage_data") or {}
+                if usage:
+                    _input_tokens += usage.get("input_tokens", 0)
+                    _output_tokens += usage.get("output_tokens", 0)
+            elif event_type == "message_delta":
+                # Message delta may also carry usage info
+                usage = event.get("usage") or {}
+                if usage:
+                    _output_tokens = max(_output_tokens, usage.get("output_tokens", 0))
+            elif event_type == "message_start":
+                # message_start often carries input token usage
+                msg = event.get("message", {})
+                usage = msg.get("usage") or {}
+                if usage:
+                    _input_tokens = max(_input_tokens, usage.get("input_tokens", 0))
             elif event_type == "content_block_start":
                 cb = event.get("content_block", {})
                 if cb.get("type") == "tool_use":
                     current_tool_name = cb.get("name")
                     current_tool_id = cb.get("id")
                     current_tool_json_parts = []
+                    await append_event(session_id, TOOL_START, {
+                        "tool_name": cb.get("name"),
+                        "tool_id": cb.get("id"),
+                    })
             elif event_type == "content_block_stop":
                 if current_tool_name == "Task" and current_tool_id:
                     try:
@@ -359,6 +506,17 @@ async def _run_claude(
                     session_broker.publish(session_id, {
                         "type": "agent_spawn",
                         **agent_info,
+                    })
+                    await append_event(session_id, AGENT_SPAWN, {
+                        "tool_use_id": current_tool_id,
+                        "description": tool_input.get("description", "Sub-agent task"),
+                        "subagent_type": tool_input.get("subagent_type", "Task"),
+                    })
+                elif current_tool_name and current_tool_id:
+                    await append_event(session_id, TOOL_END, {
+                        "tool_name": current_tool_name,
+                        "tool_id": current_tool_id,
+                        "status": "completed",
                     })
                 current_tool_name = None
                 current_tool_id = None
@@ -400,12 +558,33 @@ async def _run_claude(
                 process.returncode, session_id, stderr_text,
             )
 
+        # Retry once if the CLI reports "already in use" — this means a
+        # stale process was still holding the session lock when we spawned.
+        if (
+            process.returncode != 0
+            and "already in use" in stderr_text
+            and _retry_count < 1
+        ):
+            logger.info(
+                "Session %s still in use, retrying after cleanup (attempt %d)",
+                session_id, _retry_count + 1,
+            )
+            # Clean up the placeholder message we created for this attempt
+            if assistant_msg_id:
+                await _delete_message(assistant_msg_id)
+            # Force-kill any remaining stale processes
+            await _kill_stale_claude_processes(claude_session_id)
+            # Retry
+            await _run_claude(session_id, prompt, images, _retry_count=_retry_count + 1)
+            return
+
         # Mark session as initialized so subsequent calls use --resume
         if is_first_message:
             await mark_claude_initialized(session_id)
 
         # Finalize the assistant message
         final_content = "".join(full_content_parts).strip()
+        summary = _generate_summary(final_content, tool_calls)
         if final_content or tool_calls:
             await update_message(
                 assistant_msg_id,
@@ -414,6 +593,7 @@ async def _run_claude(
                 thinking="".join(thinking_parts) if thinking_parts else None,
                 is_complete=True,
                 status="complete",
+                summary=summary,
             )
         elif process.returncode != 0:
             # Store the error in the existing placeholder
@@ -444,10 +624,40 @@ async def _run_claude(
             "exit_code": process.returncode,
         })
 
+        await append_event(session_id, STREAM_END, {
+            "message_id": assistant_msg_id,
+            "exit_code": process.returncode,
+            "summary": summary,
+        })
+
         await touch_session(session_id)
 
-    except Exception:
+        # Push completion event to Observatory
+        # Cost estimation: input=$3/1M tokens, output=$15/1M tokens (Claude Opus pricing)
+        cost_usd = (_input_tokens * 3.0 / 1_000_000) + (_output_tokens * 15.0 / 1_000_000)
+        duration_seconds = round(time.monotonic() - _start_mono, 1)
+        push_session_event(
+            session_id=session_id,
+            event_type="complete",
+            exit_code=process.returncode if process else -1,
+            input_tokens=_input_tokens,
+            output_tokens=_output_tokens,
+            cost_usd=cost_usd,
+            duration_seconds=duration_seconds,
+        )
+
+    except Exception as exc:
         logger.exception("Error running claude for session %s", session_id)
+        await append_event(session_id, STREAM_ERROR, {
+            "error": str(exc),
+        })
+        # Push failure event to Observatory
+        push_session_event(
+            session_id=session_id,
+            event_type="failure",
+            error=str(exc),
+            duration_seconds=round(time.monotonic() - _start_mono, 1),
+        )
         # Mark the placeholder message as incomplete so it's preserved
         if assistant_msg_id:
             try:
@@ -497,9 +707,22 @@ async def cancel_session(session_id: str) -> bool:
         await asyncio.wait_for(proc.wait(), timeout=5.0)
     except asyncio.TimeoutError:
         proc.kill()
+        # Must wait after kill too, so the process fully exits and
+        # releases the Claude CLI session lock file.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            pass
     _active_processes.pop(session_id, None)
     session_broker.publish(session_id, {
         "type": "cancelled",
         "session_id": session_id,
     })
+    await append_event(session_id, STREAM_CANCELLED, {})
+    # Push cancellation event to Observatory
+    push_session_event(
+        session_id=session_id,
+        event_type="cancel",
+        error="Cancelled by user",
+    )
     return True

@@ -19,6 +19,7 @@ export interface Message {
   is_complete: boolean
   status?: MessageStatus
   created_at: string
+  summary?: string
 }
 
 export interface ToolCall {

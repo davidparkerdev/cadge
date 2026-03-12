@@ -44,7 +44,7 @@ Removes only the Nexus v2 hook entries, leaving all other settings and hooks int
 All events are POSTed to:
 
 ```
-POST http://localhost:33382/api/hooks/event
+POST http://localhost:33401/api/hooks/event
 Content-Type: application/json
 ```
 

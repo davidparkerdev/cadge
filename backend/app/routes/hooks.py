@@ -10,10 +10,11 @@ import asyncio
 import json
 import logging
 
-from fastapi import APIRouter, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.services import session_store
+from app.services.observatory_client import push_hook_event
 from app.services.stream_broker import HOOKS_GLOBAL_KEY, hooks_broker
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,36 @@ async def receive_hook_event(request: Request):
         "created_at": evt["created_at"],
     })
 
+    # Push to Observatory (fire-and-forget)
+    push_hook_event(
+        event_type=event_type,
+        session_id=hook_session_id,
+        tool_name=tool_name,
+        payload=raw,
+    )
+
     return {"id": evt["id"], "status": "received"}
+
+
+# ---------------------------------------------------------------------------
+# GET /api/hooks/events  (paginated list)
+# ---------------------------------------------------------------------------
+
+@router.get("/events")
+async def list_hook_events(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    """Return recent hook events with pagination."""
+    events, total = await session_store.list_hook_events(limit=limit, offset=offset)
+    return JSONResponse(
+        content={"events": events, "total": total, "limit": limit, "offset": offset},
+        headers={
+            "X-Total-Count": str(total),
+            "X-Limit": str(limit),
+            "X-Offset": str(offset),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

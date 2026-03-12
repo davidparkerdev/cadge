@@ -1,6 +1,6 @@
 # Nexus v2
 
-AI development companion UI built on top of Claude Code. Provides a custom chat interface, multi-agent orchestration (Hive), and monitoring dashboard (Command Center).
+AI development companion UI built on top of Claude Code. Provides a custom chat interface with session management and hook event monitoring.
 
 ## Development Setup
 
@@ -86,7 +86,8 @@ GET    /api/sessions/:id/stream   - SSE stream (multi-client broadcast)
 ### Hooks
 ```
 POST   /api/hooks/event           - Receive hook events from Claude Code
-GET    /api/hooks/stream          - SSE stream of hook events for Command Center
+GET    /api/hooks/events          - List recent hook events (paginated, limit/offset)
+GET    /api/hooks/stream          - SSE stream of hook events
 ```
 
 ### Health
@@ -98,6 +99,4 @@ GET    /api/health                - Health check
 ```
 /                    - Session list (home)
 /session/:id         - Chat view
-/hive                - Hive multi-agent view
-/command-center      - Command Center dashboard
 ```

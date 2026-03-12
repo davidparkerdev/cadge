@@ -6,6 +6,7 @@ import { ToolCallCard } from './ToolCallCard'
 
 interface MessageBubbleProps {
   message: Message
+  showToolCalls?: boolean
 }
 
 /** True when the message was saved from an interrupted or errored stream. */
@@ -16,10 +17,19 @@ function isInterrupted(message: Message): boolean {
   )
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, showToolCalls = false }: MessageBubbleProps) {
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
+  const [isExpanded, setIsExpanded] = useState(false)
   const isUser = message.role === 'user'
   const interrupted = isInterrupted(message)
+
+  // Show summary toggle when assistant message has both a summary and
+  // substantial content (>300 chars)
+  const hasSummary =
+    !isUser &&
+    !!message.summary &&
+    !!message.content &&
+    message.content.length > 300
 
   return (
     <div
@@ -61,8 +71,9 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         )}
 
-        {/* Tool calls (assistant only, excluding Task agent calls) */}
-        {!isUser &&
+        {/* Tool calls (assistant only, hidden by default — toggled via Tools button) */}
+        {showToolCalls &&
+          !isUser &&
           Array.isArray(message.tool_calls) &&
           message.tool_calls.filter((tc) => tc.name !== 'Task').length > 0 && (
             <div className="mb-2">
@@ -74,11 +85,28 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             </div>
           )}
 
-        {/* Message content */}
-        {message.content?.trim() && (
+        {/* Message content -- with summary/expand toggle for assistant messages */}
+        {hasSummary && !isExpanded ? (
           <div className="text-sm whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
-            {message.content.trim()}
+            {message.summary}
           </div>
+        ) : (
+          message.content?.trim() && (
+            <div className="text-sm whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
+              {message.content.trim()}
+            </div>
+          )
+        )}
+
+        {/* Summary toggle button */}
+        {hasSummary && (
+          <button
+            type="button"
+            onClick={() => setIsExpanded(!isExpanded)}
+            className="text-xs text-blue-400 hover:text-blue-300 mt-2 font-medium"
+          >
+            {isExpanded ? 'Show summary' : 'Show full response'}
+          </button>
         )}
 
         {/* Interrupted / incomplete response indicator */}

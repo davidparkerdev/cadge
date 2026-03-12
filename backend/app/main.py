@@ -7,21 +7,31 @@ spawns claude CLI subprocesses, and streams events to clients via SSE.
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
+import aiosqlite
+import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from thelab_observability import ObservabilityMiddleware, setup_logging
 
-from app.models.schemas import HealthResponse
+from app.middleware import RequestMetricsMiddleware
 from app.routes import chat, hooks, logs, sessions
 from app.services import claude_runner
-from app.services.session_store import init_db
+from app.services.claude_runner import _active_processes, cancel_session
+from app.services.session_store import DB_PATH, cleanup_old_hook_events, init_db
+from app.services.stream_broker import hooks_broker, session_broker
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-)
+# Replace logging.basicConfig with structured logging
+setup_logging("nexus-v2-api", json_output=False)
+
 logger = logging.getLogger(__name__)
+
+# Startup timestamp for uptime tracking
+_start_time = datetime.now(timezone.utc)
+_start_monotonic = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -32,8 +42,27 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("Nexus v2 backend starting up")
     await init_db()
+    await cleanup_old_hook_events(max_age_days=7)
+    # Initialize event store and clean up old events
+    from app.services.event_store import init_events_table, cleanup_old_events
+    await init_events_table()
+    await cleanup_old_events(max_age_days=30)
     yield
     logger.info("Nexus v2 backend shutting down")
+    # Kill all active Claude subprocesses
+    active_session_ids = list(_active_processes.keys())
+    for sid in active_session_ids:
+        try:
+            await cancel_session(sid)
+            logger.info("Cancelled subprocess for session %s on shutdown", sid)
+        except Exception:
+            logger.warning("Failed to cancel session %s on shutdown", sid, exc_info=True)
+    # Close all stream broker sessions
+    for sid in session_broker.active_session_ids():
+        session_broker.close_session(sid)
+    for sid in hooks_broker.active_session_ids():
+        hooks_broker.close_session(sid)
+    # Note: events are persisted in SQLite, no cleanup needed on shutdown
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +82,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Total-Count", "X-Limit", "X-Offset"],
 )
+
+# Observability middleware (request tracing with request_id, correlation_id, duration)
+app.add_middleware(ObservabilityMiddleware, logger_name="nexus-v2-api.http")
+
+# Request metrics middleware (pushes to Observatory, no local storage)
+app.add_middleware(RequestMetricsMiddleware)
 
 # Include routers
 app.include_router(sessions.router)
@@ -66,6 +102,64 @@ app.include_router(logs.router)
 # Health
 # ---------------------------------------------------------------------------
 
-@app.get("/api/health", response_model=HealthResponse)
+def _format_uptime(seconds: float) -> str:
+    days = int(seconds // 86400)
+    hours = int((seconds % 86400) // 3600)
+    minutes = int((seconds % 3600) // 60)
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0 or days > 0:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+@app.get("/api/health")
 async def health():
-    return HealthResponse(activeSessions=claude_runner.active_session_count())
+    uptime_seconds = round(time.monotonic() - _start_monotonic, 1)
+
+    # Check database
+    db_status = "ok"
+    db_detail = None
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            await db.execute("SELECT 1")
+    except Exception as exc:
+        db_status = "error"
+        db_detail = str(exc)
+
+    # Check stream broker
+    broker_channels = len(session_broker.active_session_ids())
+    hooks_channels = len(hooks_broker.active_session_ids())
+
+    # Overall status
+    status = "ok"
+    if db_status == "error":
+        status = "error"
+
+    # Process memory usage
+    proc = psutil.Process()
+    mem = proc.memory_info()
+
+    return {
+        "status": status,
+        "uptime_seconds": uptime_seconds,
+        "uptime_formatted": _format_uptime(uptime_seconds),
+        "started_at": _start_time.isoformat(),
+        "active_sessions": claude_runner.active_session_count(),
+        "memory": {
+            "rss_mb": round(mem.rss / 1024 / 1024, 1),
+            "vms_mb": round(mem.vms / 1024 / 1024, 1),
+        },
+        "components": {
+            "database": {
+                "status": db_status,
+                "detail": db_detail,
+            },
+            "stream_broker": {
+                "status": "ok",
+                "active_channels": broker_channels + hooks_channels,
+            },
+        },
+    }

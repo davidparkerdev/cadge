@@ -104,3 +104,66 @@ async def test_delete_session_not_found(client: httpx.AsyncClient):
     """Deleting a non-existent session should return 404."""
     resp = await client.delete("/api/sessions/nonexistent-id")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# PATCH /api/sessions/{id}  (rename)
+# ---------------------------------------------------------------------------
+
+
+async def test_patch_session_rename(client: httpx.AsyncClient):
+    """Renaming a session should update its title and return the updated session."""
+    session = await create_test_session(client, title="Original Title")
+
+    resp = await client.patch(
+        f"/api/sessions/{session['id']}",
+        json={"title": "Renamed Title"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Renamed Title"
+    assert data["id"] == session["id"]
+    # updated_at should have changed
+    assert data["updated_at"] >= session["updated_at"]
+
+
+async def test_patch_session_not_found(client: httpx.AsyncClient):
+    """Patching a non-existent session should return 404."""
+    resp = await client.patch(
+        "/api/sessions/nonexistent-id",
+        json={"title": "New Title"},
+    )
+    assert resp.status_code == 404
+
+
+async def test_patch_session_empty_title(client: httpx.AsyncClient):
+    """Patching with an empty title should be rejected (422)."""
+    session = await create_test_session(client, title="Keep This")
+
+    resp = await client.patch(
+        f"/api/sessions/{session['id']}",
+        json={"title": ""},
+    )
+    assert resp.status_code == 422
+
+
+async def test_patch_session_null_title(client: httpx.AsyncClient):
+    """Patching with null title should be rejected (422)."""
+    session = await create_test_session(client, title="Keep This")
+
+    resp = await client.patch(
+        f"/api/sessions/{session['id']}",
+        json={"title": None},
+    )
+    assert resp.status_code == 422
+
+
+async def test_patch_session_whitespace_title(client: httpx.AsyncClient):
+    """Patching with whitespace-only title should be rejected (422)."""
+    session = await create_test_session(client, title="Keep This")
+
+    resp = await client.patch(
+        f"/api/sessions/{session['id']}",
+        json={"title": "   "},
+    )
+    assert resp.status_code == 422

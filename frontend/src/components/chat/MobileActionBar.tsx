@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   NavArrowLeft,
@@ -21,6 +21,7 @@ import {
   Erase,
   Activity,
   Tools,
+  Square,
 } from 'iconoir-react'
 import type { Message, AgentInfo } from '../../api/types'
 import { cn } from '../../lib/cn'
@@ -38,8 +39,13 @@ interface MobileActionBarProps {
   disabled?: boolean
   lastAssistantMessage?: string
   isStreaming?: boolean
+  isCancelling?: boolean
+  onCancel?: () => void
   streamingMessage?: Message | null
   agents?: AgentInfo[]
+  messages?: Message[]
+  showTools?: boolean
+  onToggleTools?: () => void
 }
 
 export function MobileActionBar({
@@ -48,8 +54,13 @@ export function MobileActionBar({
   disabled = false,
   lastAssistantMessage,
   isStreaming = false,
+  isCancelling = false,
+  onCancel,
   streamingMessage,
   agents = [],
+  messages = [],
+  showTools = false,
+  onToggleTools,
 }: MobileActionBarProps) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -60,7 +71,29 @@ export function MobileActionBar({
   const [isCommandsOpen, setIsCommandsOpen] = useState(false)
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [showStream, setShowStream] = useState(false)
-  const [showTools, setShowTools] = useState(false)
+
+  // Collect ALL tool calls from message history + current stream for the Tools panel
+  const allToolCalls = useMemo(() => {
+    const calls: { name: string; status: string; messageIndex: number }[] = []
+    messages.forEach((msg, idx) => {
+      if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+        msg.tool_calls
+          .filter((tc) => tc.name !== 'Task')
+          .forEach((tc) => {
+            calls.push({ name: tc.name, status: tc.status || 'completed', messageIndex: idx })
+          })
+      }
+    })
+    // Add currently streaming tool calls
+    if (streamingMessage?.tool_calls) {
+      streamingMessage.tool_calls
+        .filter((tc) => tc.name !== 'Task')
+        .forEach((tc) => {
+          calls.push({ name: tc.name, status: tc.status || 'running', messageIndex: -1 })
+        })
+    }
+    return calls
+  }, [messages, streamingMessage?.tool_calls])
 
   // Order matters: grid fills left-to-right in 4 cols.
   // Row 1: [empty] [empty] Hide Cmds   (pinned, not in this array)
@@ -94,6 +127,18 @@ export function MobileActionBar({
 
   // Voice input (speech-to-text)
   const voice = useVoiceInput()
+
+  // When voice recording stops involuntarily (iOS auto-stop after max restarts,
+  // error, etc.), preserve the transcript as typed text so it's not lost.
+  // Without this, displayText switches to empty typedText and the user's
+  // spoken words vanish from the screen and can't be sent.
+  const prevRecordingRef = useRef(false)
+  useEffect(() => {
+    if (prevRecordingRef.current && !voice.isRecording && voice.transcript.trim()) {
+      setTypedText(voice.transcript.trim())
+    }
+    prevRecordingRef.current = voice.isRecording
+  }, [voice.isRecording, voice.transcript])
 
   // Text-to-speech playback
   const tts = useTTS()
@@ -139,7 +184,9 @@ export function MobileActionBar({
 
   const handleTalkToggle = useCallback(() => {
     if (voice.isRecording) {
-      // Cancel recording
+      // Cancel recording -- user intentionally dismissed, don't preserve transcript.
+      // Set prevRecordingRef to false so the useEffect doesn't copy transcript to typedText.
+      prevRecordingRef.current = false
       voice.cancelRecording()
     } else {
       // Start recording
@@ -164,7 +211,11 @@ export function MobileActionBar({
       // Capture the transcript FIRST from React state (includes both final + interim).
       // This must happen BEFORE stopRecording(), which calls abort() and clears state.
       content = (voice.transcript + ' ' + voice.interimTranscript).trim()
-      // Now stop recording -- this uses abort() to immediately release the mic
+      // Now stop recording -- this uses abort() to immediately release the mic.
+      // stopRecording() sets isRecording=false, which triggers the useEffect that
+      // normally preserves transcript to typedText. We disable that by setting
+      // prevRecordingRef to false FIRST, so the effect sees false->false (no transition).
+      prevRecordingRef.current = false
       voice.stopRecording()
     } else {
       content = typedText.trim()
@@ -206,7 +257,7 @@ export function MobileActionBar({
         }
       />
 
-      <div className="border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
+      {!isTextModalOpen && <div className="border-t border-border bg-surface-secondary pb-[env(safe-area-inset-bottom)]">
         {isCollapsed ? (
           /* ---- COLLAPSED: just one expand button, right-aligned ---- */
           <div className="flex justify-end p-3">
@@ -316,55 +367,13 @@ export function MobileActionBar({
               </div>
             )}
 
-            {/* Tools detail panel */}
-            {showTools && (
-              <div className="mx-3 mt-2 bg-surface-tertiary rounded-lg border border-border max-h-40 overflow-y-auto">
-                <div className="px-3 py-2">
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="text-xs font-semibold text-purple-400 uppercase tracking-wide">Tools</span>
-                  </div>
-                  {streamingMessage?.tool_calls && streamingMessage.tool_calls.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {streamingMessage.tool_calls.map((tc, i) => (
-                        <div key={i} className="flex items-center gap-2">
-                          <span className={cn(
-                            'w-1.5 h-1.5 rounded-full flex-shrink-0',
-                            tc.status === 'running' ? 'bg-amber-400 animate-pulse' :
-                            tc.status === 'completed' ? 'bg-green-400' : 'bg-red-400'
-                          )} />
-                          <span className="text-xs font-medium text-text-primary">{tc.name}</span>
-                          <span className="text-xs text-text-secondary">{tc.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : agents && agents.length > 0 ? (
-                    <div className="space-y-1.5">
-                      {agents.map((a) => (
-                        <div key={a.toolUseId} className="flex items-center gap-2">
-                          <span className={cn(
-                            'w-1.5 h-1.5 rounded-full flex-shrink-0',
-                            a.status === 'running' ? 'bg-amber-400 animate-pulse' :
-                            a.status === 'completed' ? 'bg-green-400' : 'bg-red-400'
-                          )} />
-                          <span className="text-xs font-medium text-text-primary">{a.description}</span>
-                          <span className="text-xs text-text-secondary">{a.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-text-secondary">No active tools</p>
-                  )}
-                </div>
-              </div>
-            )}
-
             {/* Unified action grid */}
             <div className="grid grid-cols-4 gap-2 p-3">
 
               {/* Row 1: Stream, Tools, Hide, Cmds */}
               <button
                 type="button"
-                onClick={() => { setShowStream(!showStream); if (!showStream) setShowTools(false) }}
+                onClick={() => { setShowStream(!showStream) }}
                 className={cn(
                   btnBase,
                   showStream
@@ -380,18 +389,18 @@ export function MobileActionBar({
 
               <button
                 type="button"
-                onClick={() => { setShowTools(!showTools); if (!showTools) setShowStream(false) }}
+                onClick={() => { onToggleTools?.(); if (!showTools) setShowStream(false) }}
                 className={cn(
                   btnBase,
                   showTools
                     ? 'bg-purple-500/30 text-purple-300 ring-1 ring-purple-500/40'
                     : 'bg-purple-500/15 text-purple-400',
-                  !streamingMessage?.tool_calls?.length && !(agents && agents.length > 0) && 'opacity-40'
+                  allToolCalls.length === 0 && agents.length === 0 && 'opacity-40'
                 )}
                 aria-label={showTools ? 'Hide tools' : 'Show tools'}
               >
                 <Tools className="w-6 h-6" />
-                <span>Tools</span>
+                <span>Tools{allToolCalls.length > 0 ? ` (${allToolCalls.length})` : ''}</span>
               </button>
 
               <button
@@ -542,27 +551,46 @@ export function MobileActionBar({
                     <span>Bottom</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={handleSend}
-                    disabled={disabled || (!hasText && !voice.isRecording)}
-                    className={cn(
-                      btnBase,
-                      hasText || voice.isRecording
-                        ? 'bg-green-500/20 text-green-400'
-                        : 'bg-gray-500/20 text-gray-500 opacity-30'
-                    )}
-                    aria-label="Send message"
-                  >
-                    <SendDiagonal className="w-6 h-6" />
-                    <span>Send</span>
-                  </button>
+                  {isStreaming ? (
+                    <button
+                      type="button"
+                      onClick={onCancel}
+                      disabled={isCancelling}
+                      className={cn(
+                        btnBase,
+                        isCancelling
+                          ? 'bg-amber-500/20 text-amber-400'
+                          : 'bg-red-500/20 text-red-400',
+                        isCancelling && 'opacity-70'
+                      )}
+                      aria-label={isCancelling ? 'Cancelling' : 'Stop response'}
+                    >
+                      <Square className="w-6 h-6" />
+                      <span>{isCancelling ? 'Stopping' : 'Stop'}</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleSend}
+                      disabled={disabled || (!hasText && !voice.isRecording)}
+                      className={cn(
+                        btnBase,
+                        hasText || voice.isRecording
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-gray-500/20 text-gray-500 opacity-30'
+                      )}
+                      aria-label="Send message"
+                    >
+                      <SendDiagonal className="w-6 h-6" />
+                      <span>Send</span>
+                    </button>
+                  )}
                 </>
               )}
             </div>
           </>
         )}
-      </div>
+      </div>}
     </>
   )
 }

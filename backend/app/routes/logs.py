@@ -2,6 +2,7 @@
 
 Receives structured log entries from the Stargate frontend and writes them
 to the backend logger, giving persistent visibility into client-side errors.
+Error and warn level logs are also pushed to Observatory for alerting.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+
+from app.services.observatory_client import push_frontend_error
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 logger = logging.getLogger("stargate.frontend")
@@ -41,5 +44,15 @@ async def ingest_log(entry: LogEntry):
         logger.info(text)
     else:
         logger.debug(text)
+
+    # Push error/warn to Observatory (fire-and-forget)
+    if level in ("error", "warn"):
+        push_frontend_error(
+            level=level,
+            category=entry.category,
+            message=entry.message,
+            error=entry.error,
+            data=entry.data,
+        )
 
     return {"ok": True}

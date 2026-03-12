@@ -63,7 +63,7 @@ export default defineConfig({
     port: 33400,
     strictPort: true,
     host: true,
-    allowedHosts: ['lab.local', '.trycloudflare.com', '.taild30c55.ts.net'],
+    allowedHosts: ['.taild30c55.ts.net'],
     headers: {
       'Cache-Control': 'no-store',
     },

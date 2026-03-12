@@ -68,6 +68,74 @@ async def test_get_messages_returns_sent(client: httpx.AsyncClient):
     assert messages[0]["is_complete"] is True
 
 
+async def test_get_messages_pagination_headers(client: httpx.AsyncClient):
+    """GET messages should include X-Total-Count, X-Limit, X-Offset headers."""
+    session = await create_test_session(client)
+
+    # Create 5 messages
+    for i in range(5):
+        await client.post(
+            f"/api/sessions/{session['id']}/messages",
+            json={"content": f"Message {i}"},
+        )
+
+    resp = await client.get(
+        f"/api/sessions/{session['id']}/messages",
+        params={"limit": 2, "offset": 0},
+    )
+    assert resp.status_code == 200
+    messages = resp.json()
+    assert len(messages) == 2
+    assert resp.headers["X-Total-Count"] == "5"
+    assert resp.headers["X-Limit"] == "2"
+    assert resp.headers["X-Offset"] == "0"
+    # Should return the first two messages
+    assert messages[0]["content"] == "Message 0"
+    assert messages[1]["content"] == "Message 1"
+
+
+async def test_get_messages_pagination_offset(client: httpx.AsyncClient):
+    """Offset should skip messages correctly."""
+    session = await create_test_session(client)
+
+    for i in range(5):
+        await client.post(
+            f"/api/sessions/{session['id']}/messages",
+            json={"content": f"Message {i}"},
+        )
+
+    resp = await client.get(
+        f"/api/sessions/{session['id']}/messages",
+        params={"limit": 2, "offset": 2},
+    )
+    assert resp.status_code == 200
+    messages = resp.json()
+    assert len(messages) == 2
+    assert resp.headers["X-Total-Count"] == "5"
+    assert resp.headers["X-Offset"] == "2"
+    assert messages[0]["content"] == "Message 2"
+    assert messages[1]["content"] == "Message 3"
+
+
+async def test_get_messages_default_no_params(client: httpx.AsyncClient):
+    """Without params, all messages should be returned (up to default limit)."""
+    session = await create_test_session(client)
+
+    for i in range(3):
+        await client.post(
+            f"/api/sessions/{session['id']}/messages",
+            json={"content": f"Message {i}"},
+        )
+
+    resp = await client.get(f"/api/sessions/{session['id']}/messages")
+    assert resp.status_code == 200
+    messages = resp.json()
+    assert len(messages) == 3
+    assert resp.headers["X-Total-Count"] == "3"
+    assert resp.headers["X-Limit"] == "200"
+    assert resp.headers["X-Offset"] == "0"
+
+
 # ---------------------------------------------------------------------------
 # POST /api/sessions/{id}/answer
 # ---------------------------------------------------------------------------
