@@ -89,107 +89,135 @@ export function useVoiceInput(): UseVoiceInputReturn {
     typeof window !== 'undefined' &&
     ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window)
 
-  const getRecognition = useCallback((): SpeechRecognitionInstance | null => {
+  // Create a FRESH SpeechRecognition instance every time recording starts.
+  // Never reuse instances -- stale onend closures cause ghost instances that
+  // compete for the mic and lock it permanently on iOS.
+  const createRecognition = useCallback((): SpeechRecognitionInstance | null => {
     if (!isSupported) return null
 
-    if (!recognitionRef.current) {
-      const SpeechRecognitionCtor =
-        window.SpeechRecognition || window.webkitSpeechRecognition
-      const recognition = new SpeechRecognitionCtor()
+    const SpeechRecognitionCtor =
+      window.SpeechRecognition || window.webkitSpeechRecognition
+    const recognition = new SpeechRecognitionCtor()
 
-      // iOS Safari does not support continuous mode -- disable to prevent thrashing
-      recognition.continuous = !isIOS
-      recognition.interimResults = true
-      recognition.lang = 'en-US'
+    // iOS Safari does not support continuous mode -- disable to prevent thrashing
+    recognition.continuous = !isIOS
+    recognition.interimResults = true
+    recognition.lang = 'en-US'
 
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (!mountedRef.current) return
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      if (!mountedRef.current) return
+      // CRITICAL: Ignore events from stale instances.
+      // After stop+restart, a dead instance may still fire callbacks.
+      if (recognitionRef.current !== recognition) return
 
-        let sessionFinalText = ''
-        let interimText = ''
+      let sessionFinalText = ''
+      let interimText = ''
 
-        for (let i = 0; i < event.results.length; i++) {
-          const result = event.results[i]
-          if (result.isFinal) {
-            sessionFinalText += result[0].transcript
-          } else {
-            interimText += result[0].transcript
-          }
-        }
-
-        // On iOS (continuous=false), recognition auto-stops after silence
-        // and restarts via onend. Each restart creates a new recognition
-        // session with fresh results, so we must ACCUMULATE final text
-        // across restarts rather than overwriting.
-        if (sessionFinalText) {
-          // Only append genuinely new final text (avoid duplicates from
-          // the same recognition session re-firing onresult).
-          transcriptRef.current = accumulatedRef.current + sessionFinalText
-        }
-        setTranscript(transcriptRef.current)
-        setInterimTranscript(interimText)
-      }
-
-      recognition.onerror = (event: Event & { error: string }) => {
-        if (!mountedRef.current) return
-        // 'aborted' is expected when we call stop/abort, not a real error
-        if (event.error === 'aborted') return
-
-        setError(event.error)
-        setIsRecording(false)
-        isRecordingRef.current = false
-        // Destroy the instance so iOS fully releases the mic on error
-        recognitionRef.current = null
-      }
-
-      recognition.onend = () => {
-        if (!mountedRef.current) return
-
-        // If the user has stopped recording (isRecordingRef is false),
-        // do NOT restart. Just clean up and exit.
-        if (!isRecordingRef.current) {
-          if (mountedRef.current) {
-            setIsRecording(false)
-          }
-          return
-        }
-
-        // Still supposed to be recording -- restart to handle silence
-        // auto-stop (especially on iOS), but respect the restart limit.
-        // Snapshot accumulated text so the next onresult can append to it.
-        accumulatedRef.current = transcriptRef.current
-        if (restartCountRef.current < MAX_RESTART_ATTEMPTS) {
-          restartCountRef.current++
-          try {
-            recognition.start()
-          } catch {
-            isRecordingRef.current = false
-            // Destroy the instance to release the mic on failed restart
-            recognitionRef.current = null
-            if (mountedRef.current) {
-              setIsRecording(false)
-            }
-          }
+      for (let i = 0; i < event.results.length; i++) {
+        const result = event.results[i]
+        if (result.isFinal) {
+          sessionFinalText += result[0].transcript
         } else {
-          // Max restarts reached -- stop to prevent infinite loop
+          interimText += result[0].transcript
+        }
+      }
+
+      // On iOS (continuous=false), recognition auto-stops after silence
+      // and restarts via onend. Each restart creates a new recognition
+      // session with fresh results, so we must ACCUMULATE final text
+      // across restarts rather than overwriting.
+      if (sessionFinalText) {
+        // Only append genuinely new final text (avoid duplicates from
+        // the same recognition session re-firing onresult).
+        transcriptRef.current = accumulatedRef.current + sessionFinalText
+      }
+      setTranscript(transcriptRef.current)
+      setInterimTranscript(interimText)
+    }
+
+    recognition.onerror = (event: Event & { error: string }) => {
+      if (!mountedRef.current) return
+      // 'aborted' is expected when we call stop/abort, not a real error
+      if (event.error === 'aborted') return
+      // Ignore events from stale instances
+      if (recognitionRef.current !== recognition) return
+
+      setError(event.error)
+      setIsRecording(false)
+      isRecordingRef.current = false
+      // Destroy the instance so iOS fully releases the mic on error
+      recognitionRef.current = null
+    }
+
+    recognition.onend = () => {
+      if (!mountedRef.current) return
+
+      // CRITICAL: Ignore events from stale/ghost instances.
+      // Without this check, the following race condition locks the mic:
+      //   1. iOS auto-stops recognition, onend fires on instance A
+      //   2. User taps Send -> stopRecording aborts A, nulls ref
+      //   3. User taps Talk -> creates instance B, sets isRecordingRef=true
+      //   4. Instance A's onend fires (async from step 2's abort)
+      //   5. Sees isRecordingRef=true, restarts instance A via closure
+      //   6. Now A and B both hold the mic -> iOS locks up
+      if (recognitionRef.current !== recognition) return
+
+      // If the user has stopped recording (isRecordingRef is false),
+      // do NOT restart. Just clean up and exit.
+      if (!isRecordingRef.current) {
+        if (mountedRef.current) {
+          setIsRecording(false)
+        }
+        return
+      }
+
+      // Still supposed to be recording -- restart to handle silence
+      // auto-stop (especially on iOS), but respect the restart limit.
+      // Snapshot accumulated text so the next onresult can append to it.
+      accumulatedRef.current = transcriptRef.current
+      if (restartCountRef.current < MAX_RESTART_ATTEMPTS) {
+        restartCountRef.current++
+        try {
+          recognition.start()
+        } catch {
           isRecordingRef.current = false
-          // Destroy the instance so iOS fully releases the mic
+          // Destroy the instance to release the mic on failed restart
           recognitionRef.current = null
           if (mountedRef.current) {
             setIsRecording(false)
           }
         }
+      } else {
+        // Max restarts reached -- stop to prevent infinite loop
+        isRecordingRef.current = false
+        // Destroy the instance so iOS fully releases the mic
+        recognitionRef.current = null
+        if (mountedRef.current) {
+          setIsRecording(false)
+        }
       }
-
-      recognitionRef.current = recognition
     }
 
-    return recognitionRef.current
+    return recognition
   }, [isSupported])
 
   const startRecording = useCallback(() => {
-    const recognition = getRecognition()
+    // Force-kill any existing instance FIRST to prevent ghost instances.
+    // On iOS, a lingering SpeechRecognition can hold the mic even after abort()
+    // if the object isn't dereferenced for GC.
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort()
+      } catch {
+        // Already stopped
+      }
+      recognitionRef.current = null
+    }
+
+    const recognition = createRecognition()
     if (!recognition) return
+
+    recognitionRef.current = recognition
 
     setError(null)
     setTranscript('')
@@ -203,8 +231,7 @@ export function useVoiceInput(): UseVoiceInputReturn {
     try {
       recognition.start()
     } catch {
-      // If already started, abort and restart
-      recognition.abort()
+      // Mic may still be locked by a dying instance. Wait longer and retry.
       setTimeout(() => {
         try {
           recognition.start()
@@ -214,10 +241,11 @@ export function useVoiceInput(): UseVoiceInputReturn {
             setIsRecording(false)
           }
           isRecordingRef.current = false
+          recognitionRef.current = null
         }
-      }, 100)
+      }, 200)
     }
-  }, [getRecognition])
+  }, [createRecognition])
 
   const stopRecording = useCallback((): string => {
     // Capture the transcript BEFORE doing anything else
