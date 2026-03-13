@@ -317,6 +317,7 @@ async def _run_claude(
     tool_calls: list[dict] = []
     thinking_parts: list[str] = []
     stderr_task: Optional[asyncio.Task] = None
+    _model: str = ""  # Extracted from message_start event
 
     try:
         # Create a placeholder assistant message in the DB BEFORE streaming
@@ -474,8 +475,10 @@ async def _run_claude(
                 if usage:
                     _output_tokens = max(_output_tokens, usage.get("output_tokens", 0))
             elif event_type == "message_start":
-                # message_start often carries input token usage
+                # message_start carries input token usage and model name
                 msg = event.get("message", {})
+                if msg.get("model"):
+                    _model = msg["model"]
                 usage = msg.get("usage") or {}
                 if usage:
                     _input_tokens = max(_input_tokens, usage.get("input_tokens", 0))
@@ -633,8 +636,21 @@ async def _run_claude(
         await touch_session(session_id)
 
         # Push completion event to Observatory
-        # Cost estimation: input=$3/1M tokens, output=$15/1M tokens (Claude Opus pricing)
-        cost_usd = (_input_tokens * 3.0 / 1_000_000) + (_output_tokens * 15.0 / 1_000_000)
+        # Cost estimation based on detected model (falls back to Sonnet pricing)
+        _PRICING = {
+            # (input $/1M tokens, output $/1M tokens)
+            "opus": (15.0, 75.0),
+            "sonnet": (3.0, 15.0),
+            "haiku": (0.25, 1.25),
+        }
+        tier = "sonnet"  # default
+        model_lower = _model.lower()
+        for key in _PRICING:
+            if key in model_lower:
+                tier = key
+                break
+        input_rate, output_rate = _PRICING[tier]
+        cost_usd = (_input_tokens * input_rate / 1_000_000) + (_output_tokens * output_rate / 1_000_000)
         duration_seconds = round(time.monotonic() - _start_mono, 1)
         push_session_event(
             session_id=session_id,
@@ -695,6 +711,16 @@ async def _run_claude(
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def cleanup_session_resources(session_id: str) -> None:
+    """Clean up per-session locks and process entries.
+
+    Call when a session is permanently deleted to prevent unbounded
+    growth of _session_locks and _active_processes dictionaries.
+    """
+    _session_locks.pop(session_id, None)
+    _active_processes.pop(session_id, None)
 
 
 async def cancel_session(session_id: str) -> bool:

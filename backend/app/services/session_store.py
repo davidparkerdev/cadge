@@ -71,6 +71,9 @@ async def init_db() -> None:
         # Enable WAL mode for concurrent read/write access.
         # Eliminates "database is locked" errors under load.
         await db.execute("PRAGMA journal_mode=WAL;")
+        # Enable foreign key enforcement so ON DELETE CASCADE actually works.
+        # SQLite has FK support compiled in but OFF by default per-connection.
+        await db.execute("PRAGMA foreign_keys=ON;")
         await db.commit()
 
         # Migrate: add new columns if they don't exist (for existing databases)
@@ -300,7 +303,7 @@ async def list_messages(session_id: str, limit: int = 200, offset: int = 0) -> l
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
-            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?",
+            "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?",
             (session_id, limit, offset),
         )
         rows = await cursor.fetchall()

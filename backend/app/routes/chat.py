@@ -12,11 +12,31 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from app.models.schemas import MessageAnswer, MessageResponse, MessageSend, MessageSendResponse
 from app.services import claude_runner, session_store
 from app.services.event_store import event_stream
-from app.services.stream_broker import session_broker
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/sessions/{session_id}", tags=["chat"])
+
+# Track background tasks so exceptions aren't silently swallowed.
+# Also prevents GC from collecting running tasks.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_claude_task(coro) -> asyncio.Task:
+    """Create a tracked background task with error logging."""
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+
+    def _on_done(t: asyncio.Task):
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc:
+            logger.error("Background claude task failed: %s", exc, exc_info=exc)
+
+    task.add_done_callback(_on_done)
+    return task
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +82,8 @@ async def send_message(session_id: str, body: MessageSend):
         is_complete=True,
     )
 
-    # Spawn claude runner as a background task
-    asyncio.create_task(
+    # Spawn claude runner as a tracked background task
+    _spawn_claude_task(
         claude_runner.send_message(
             session_id=session_id,
             prompt=body.content,
@@ -98,8 +118,8 @@ async def answer_question(session_id: str, body: MessageAnswer):
         is_complete=True,
     )
 
-    # Spawn claude runner
-    asyncio.create_task(
+    # Spawn claude runner as a tracked background task
+    _spawn_claude_task(
         claude_runner.send_message(
             session_id=session_id,
             prompt=prompt,
@@ -107,41 +127,6 @@ async def answer_question(session_id: str, body: MessageAnswer):
     )
 
     return MessageSendResponse(messageId=msg["id"], status="streaming")
-
-
-# ---------------------------------------------------------------------------
-# GET /api/sessions/{session_id}/stream  (SSE)
-# ---------------------------------------------------------------------------
-
-@router.get("/stream")
-async def stream_events(session_id: str, request: Request):
-    session = await session_store.get_session(session_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    async def event_generator():
-        # Send an initial connection event
-        yield _sse({"type": "connected", "session_id": session_id,
-                     "streaming": claude_runner.is_session_streaming(session_id)})
-
-        subscription = session_broker.subscribe(session_id)
-        ping_interval = 15  # seconds
-
-        try:
-            async for event in _with_keepalive(subscription, ping_interval, request):
-                yield _sse(event)
-        except asyncio.CancelledError:
-            pass
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,20 +204,3 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data)}\n\n"
 
 
-async def _with_keepalive(subscription, interval: int, request: Request):
-    """Wrap an async generator with periodic keepalive pings.
-
-    Also checks if the client has disconnected.
-    """
-    sub_iter = subscription.__aiter__()
-    while True:
-        if await request.is_disconnected():
-            break
-        try:
-            event = await asyncio.wait_for(sub_iter.__anext__(), timeout=interval)
-            yield event
-        except asyncio.TimeoutError:
-            # Send keepalive ping
-            yield {"type": "ping"}
-        except StopAsyncIteration:
-            break

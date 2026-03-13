@@ -167,16 +167,16 @@ async def test_answer_question_returns_202(client: httpx.AsyncClient):
 
 
 # ---------------------------------------------------------------------------
-# GET /api/sessions/{id}/stream  (SSE)
+# GET /api/sessions/{id}/events  (Event-sourced SSE)
 # ---------------------------------------------------------------------------
 
 
-async def test_sse_stream_connects(client: httpx.AsyncClient):
-    """Connecting to the SSE stream should yield an initial 'connected' event."""
+async def test_sse_events_connects(client: httpx.AsyncClient):
+    """Connecting to the events SSE endpoint should yield an initial 'connected' event."""
     session = await create_test_session(client)
 
     async with client.stream(
-        "GET", f"/api/sessions/{session['id']}/stream"
+        "GET", f"/api/sessions/{session['id']}/events?since=0"
     ) as resp:
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("text/event-stream")

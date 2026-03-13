@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Outlet, useNavigate } from 'react-router-dom'
 import {
   Layout,
@@ -46,13 +46,6 @@ function MobileHeader() {
   const navigate = useNavigate()
   const { create } = useSessionsContext()
   const [isNewSessionOpen, setIsNewSessionOpen] = useState(false)
-
-  // Listen for custom event from HomeView's "New Session" button
-  useEffect(() => {
-    const handler = () => setIsNewSessionOpen(true)
-    window.addEventListener('stargate:new-session', handler)
-    return () => window.removeEventListener('stargate:new-session', handler)
-  }, [])
 
   const handleCreate = async (config: {
     title?: string

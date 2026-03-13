@@ -26,6 +26,8 @@ export function useTTS(): UseTTSReturn {
   const offsetRef = useRef(0)
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const voicesRef = useRef<SpeechSynthesisVoice[]>([])
+  // Track last known character position from onboundary (more accurate than progress state)
+  const lastBoundaryPosRef = useRef(0)
 
   const isSupported =
     typeof window !== 'undefined' && 'speechSynthesis' in window
@@ -99,10 +101,14 @@ export function useTTS(): UseTTSReturn {
         setProgress(1)
       }
 
-      // Track progress via boundary events
+      // Track progress via boundary events.
+      // Also save absolute char position in a ref so pause() can use it
+      // directly -- on iOS, onboundary fires infrequently (sentence-level),
+      // so the ref gives us the most accurate position we have.
       utterance.onboundary = (event: SpeechSynthesisEvent) => {
         if (fullTextRef.current.length > 0) {
           const currentPosition = offset + event.charIndex
+          lastBoundaryPosRef.current = currentPosition
           setProgress(
             Math.min(currentPosition / fullTextRef.current.length, 1)
           )
@@ -124,6 +130,7 @@ export function useTTS(): UseTTSReturn {
     (text: string) => {
       fullTextRef.current = text
       offsetRef.current = 0
+      lastBoundaryPosRef.current = 0
       setProgress(0)
       speakFromOffset(text, 0)
     },
@@ -135,14 +142,15 @@ export function useTTS(): UseTTSReturn {
   const pause = useCallback(() => {
     if (!isSupported || !isSpeaking) return
 
-    // Estimate current character position from progress
-    const savedOffset = Math.floor(progress * fullTextRef.current.length)
-    offsetRef.current = savedOffset
+    // Use the last boundary position from onboundary (ref), not React state.
+    // iOS fires onboundary at sentence boundaries only, so this is the best
+    // position we have -- it won't jump backward by more than one sentence.
+    offsetRef.current = lastBoundaryPosRef.current
 
     window.speechSynthesis.cancel()
     setIsSpeaking(false)
     setIsPaused(true)
-  }, [isSupported, isSpeaking, progress])
+  }, [isSupported, isSpeaking])
 
   const resume = useCallback(() => {
     if (!isSupported || !isPaused) return
@@ -155,6 +163,7 @@ export function useTTS(): UseTTSReturn {
     window.speechSynthesis.cancel()
     fullTextRef.current = ''
     offsetRef.current = 0
+    lastBoundaryPosRef.current = 0
     setIsSpeaking(false)
     setIsPaused(false)
     setProgress(0)
@@ -163,21 +172,21 @@ export function useTTS(): UseTTSReturn {
   const skipForward = useCallback(() => {
     if (!fullTextRef.current) return
 
-    const currentPos = Math.floor(progress * fullTextRef.current.length)
+    const currentPos = lastBoundaryPosRef.current
     const newOffset = Math.min(
       currentPos + SKIP_CHARS,
       fullTextRef.current.length
     )
     speakFromOffset(fullTextRef.current, newOffset)
-  }, [progress, speakFromOffset])
+  }, [speakFromOffset])
 
   const skipBack = useCallback(() => {
     if (!fullTextRef.current) return
 
-    const currentPos = Math.floor(progress * fullTextRef.current.length)
+    const currentPos = lastBoundaryPosRef.current
     const newOffset = Math.max(currentPos - SKIP_CHARS, 0)
     speakFromOffset(fullTextRef.current, newOffset)
-  }, [progress, speakFromOffset])
+  }, [speakFromOffset])
 
   // Clean up on unmount
   useEffect(() => {

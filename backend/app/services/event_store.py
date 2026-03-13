@@ -186,14 +186,17 @@ async def _notify_new_event(session_id: str) -> None:
 
 
 async def delete_session_events(session_id: str) -> int:
-    """Delete all events for a session. Returns count of deleted rows."""
+    """Delete all events for a session and clean up its condition. Returns count of deleted rows."""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             "DELETE FROM events WHERE session_id = ?",
             (session_id,),
         )
         await db.commit()
-        return cursor.rowcount
+        deleted = cursor.rowcount
+    # Clean up the per-session condition to prevent memory leak
+    _session_conditions.pop(session_id, None)
+    return deleted
 
 
 async def cleanup_old_events(max_age_days: int = 30) -> int:
@@ -211,12 +214,16 @@ async def cleanup_old_events(max_age_days: int = 30) -> int:
     return deleted
 
 
+_TERMINAL_EVENT_TYPES = frozenset({STREAM_END, STREAM_ERROR, STREAM_CANCELLED})
+
+
 async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[dict, None]:
     """Async generator that yields events for a session, starting from since_seq.
 
     First yields all existing events from DB where seq > since_seq (catch-up).
     Then enters a loop: wait_for_events(), query new events, yield them.
-    This is the core primitive for the event-sourced SSE endpoint.
+    Terminates after yielding a terminal event (stream_end, stream_error,
+    stream_cancelled) so SSE connections don't poll the DB forever.
 
     Yields dicts: {seq, event_type, data, created_at}
     """
@@ -227,12 +234,29 @@ async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[di
     for event in events:
         yield event
         last_seq = event["seq"]
+        if event["event_type"] in _TERMINAL_EVENT_TYPES:
+            return
 
     # Phase 2: live -- wait for new events and yield them
+    # Cap idle iterations to prevent infinite loops if no events ever arrive
+    # (e.g., session was deleted, or claude process never started).
+    idle_cycles = 0
+    max_idle_cycles = 60  # 60 * 30s timeout = 30 min max idle
     while True:
         notified = await wait_for_events(session_id, timeout=30.0)
         if notified:
+            idle_cycles = 0
             events = await get_events(session_id, since_seq=last_seq)
             for event in events:
                 yield event
                 last_seq = event["seq"]
+                if event["event_type"] in _TERMINAL_EVENT_TYPES:
+                    return
+        else:
+            idle_cycles += 1
+            if idle_cycles >= max_idle_cycles:
+                logger.info(
+                    "event_stream for session %s idle for %d cycles, terminating",
+                    session_id, idle_cycles,
+                )
+                return

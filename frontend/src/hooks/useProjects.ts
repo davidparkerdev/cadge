@@ -17,7 +17,11 @@ export function useProjects() {
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${SERVICE_MANAGER_URL}/api/services/catalog`)
+    const controller = new AbortController()
+
+    fetch(`${SERVICE_MANAGER_URL}/api/services/catalog`, {
+      signal: controller.signal,
+    })
       .then(res => res.json())
       .then((catalog: Array<{ id: string; name: string; repoPath: string }>) => {
         const result: Project[] = catalog
@@ -29,11 +33,15 @@ export function useProjects() {
           .sort((a, b) => a.name.localeCompare(b.name))
         setProjects(result)
       })
-      .catch(() => {
+      .catch((err) => {
+        // Ignore aborted requests (component unmounted)
+        if (err.name === 'AbortError') return
         // Service manager might not be running
         setProjects([])
       })
       .finally(() => setIsLoading(false))
+
+    return () => controller.abort()
   }, [])
 
   return { projects, isLoading }

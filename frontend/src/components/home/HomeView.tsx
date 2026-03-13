@@ -1,14 +1,34 @@
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus } from 'iconoir-react'
 import { cn } from '../../lib/cn'
 import { useSessionsContext } from '../../contexts/SessionsContext'
 import { SessionItem } from '../sessions/SessionItem'
+import { NewSessionModal } from '../sessions/NewSessionModal'
 
 export function HomeView() {
-  const { sessions, remove } = useSessionsContext()
+  const navigate = useNavigate()
+  const { sessions, remove, create } = useSessionsContext()
+  const [isNewSessionOpen, setIsNewSessionOpen] = useState(false)
 
   const handleDelete = async (id: string) => {
     try {
       await remove(id)
+    } catch {
+      // Error handled by context
+    }
+  }
+
+  const handleCreate = async (config: {
+    title?: string
+    role?: string
+    projectName?: string
+    projectDir?: string
+  }) => {
+    try {
+      const session = await create(config)
+      setIsNewSessionOpen(false)
+      navigate(`/session/${session.id}`)
     } catch {
       // Error handled by context
     }
@@ -19,22 +39,24 @@ export function HomeView() {
 
   return (
     <div className="flex-1 flex flex-col items-center px-4 pt-6 pb-8 overflow-y-auto">
+      <NewSessionModal
+        isOpen={isNewSessionOpen}
+        onClose={() => setIsNewSessionOpen(false)}
+        onCreate={handleCreate}
+      />
+
       <div className="w-full max-w-md space-y-6">
         {/* Subtitle */}
         <p className="text-sm text-text-secondary text-center">
           Select a session or create a new one
         </p>
 
-        {/* New session button -- triggers the modal via MobileHeader's + button on mobile,
-            or the sidebar New Session button on desktop. On mobile we provide a direct
-            action here since the sidebar isn't visible. */}
+        {/* New session button -- opens modal directly via React state,
+            no CustomEvent needed since we have context access here */}
         <div className="md:hidden">
           <button
             type="button"
-            onClick={() => {
-              // Dispatch a custom event that MobileHeader listens for
-              window.dispatchEvent(new CustomEvent('stargate:new-session'))
-            }}
+            onClick={() => setIsNewSessionOpen(true)}
             className={cn(
               'w-full py-4 rounded-xl text-sm font-semibold',
               'bg-teal-500/20 text-teal-400',
