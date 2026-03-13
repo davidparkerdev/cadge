@@ -169,13 +169,13 @@ async def send_message(
     """
     lock = _get_session_lock(session_id)
 
-    # If the lock is already held (previous message still running), cancel it
-    if lock.locked() and session_id in _active_processes:
+    # Always attempt to cancel any in-progress work before acquiring the lock.
+    # cancel_session is a no-op if nothing is running (returns False).
+    # This eliminates the TOCTOU race where lock.locked() and async with lock
+    # are not atomic — two concurrent sends could both skip the cancel.
+    if session_id in _active_processes:
         logger.info("Cancelling active process for session %s before sending new message", session_id)
         await cancel_session(session_id)
-        # No sleep needed -- async with lock below will block until the
-        # previous _run_claude finishes its cleanup and releases the lock,
-        # guaranteeing STREAM_END is written before our STREAM_START.
 
     async with lock:
         await _run_claude(session_id, prompt, images)
@@ -247,69 +247,6 @@ async def _run_claude(
     # Claude to use its Read tool (which natively supports image viewing).
     temp_files: list[str] = []
     add_dirs: list[str] = []
-    if images:
-        image_paths: list[str] = []
-        for i, b64 in enumerate(images):
-            try:
-                # Strip data URI prefix (e.g. "data:image/jpeg;base64,...")
-                raw_b64 = b64.split(",", 1)[-1] if "," in b64 else b64
-                data = base64.b64decode(raw_b64)
-                suffix = ".png"
-                fd, path = tempfile.mkstemp(suffix=suffix, prefix=f"nexus_img_{i}_")
-                os.write(fd, data)
-                os.close(fd)
-                temp_files.append(path)
-                image_paths.append(path)
-            except Exception:
-                logger.exception("Failed to decode image %d", i)
-
-        if image_paths:
-            # Grant Claude access to the temp directory
-            add_dirs.append(os.path.dirname(image_paths[0]))
-
-            # Prepend image instructions to the prompt
-            if len(image_paths) == 1:
-                prompt = (
-                    f"[The user has attached an image. "
-                    f"Use the Read tool to view it at: {image_paths[0]}]\n\n"
-                    + prompt
-                )
-            else:
-                paths_list = "\n".join(f"- {p}" for p in image_paths)
-                prompt = (
-                    f"[The user has attached {len(image_paths)} images. "
-                    f"Use the Read tool to view them:\n{paths_list}]\n\n"
-                    + prompt
-                )
-
-    # Build command (after all prompt modifications)
-    cmd = [
-        "claude",
-        "-p", prompt,
-    ]
-    if is_first_message:
-        cmd.extend(["--session-id", claude_session_id])
-    else:
-        cmd.extend(["--resume", claude_session_id])
-    cmd.extend([
-        "--output-format", "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions",
-    ])
-    for d in add_dirs:
-        cmd.extend(["--add-dir", d])
-
-    # Publish a "start" meta-event so the frontend knows streaming began
-    session_broker.publish(session_id, {
-        "type": "start",
-        "session_id": session_id,
-    })
-
-    # Strip CLAUDECODE env var so the CLI doesn't think it's nested
-    clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-
-    # How often to flush accumulated content to the DB (seconds)
-    PERIODIC_SAVE_INTERVAL = 5.0
 
     process: Optional[asyncio.subprocess.Process] = None
     assistant_msg_id: Optional[str] = None
@@ -322,6 +259,80 @@ async def _run_claude(
     _model: str = ""  # Extracted from message_start event
 
     try:
+        if images:
+            image_paths: list[str] = []
+            for i, b64 in enumerate(images):
+                try:
+                    # Strip data URI prefix (e.g. "data:image/jpeg;base64,...")
+                    raw_b64 = b64.split(",", 1)[-1] if "," in b64 else b64
+                    data = base64.b64decode(raw_b64)
+                    # Detect MIME type from data URI for correct file extension
+                    mime_type = 'image/png'
+                    if ',' in b64 and ':' in b64:
+                        try:
+                            mime_type = b64.split(';', 1)[0].split(':', 1)[1]
+                        except (IndexError, ValueError):
+                            pass
+                    _EXT_MAP = {
+                        'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif',
+                        'image/webp': '.webp', 'image/heic': '.heic', 'image/heif': '.heif',
+                    }
+                    suffix = _EXT_MAP.get(mime_type, '.png')
+                    fd, path = tempfile.mkstemp(suffix=suffix, prefix=f"nexus_img_{i}_")
+                    os.write(fd, data)
+                    os.close(fd)
+                    temp_files.append(path)
+                    image_paths.append(path)
+                except Exception:
+                    logger.exception("Failed to decode image %d", i)
+
+            if image_paths:
+                # Grant Claude access to the temp directory
+                add_dirs.append(os.path.dirname(image_paths[0]))
+
+                # Prepend image instructions to the prompt
+                if len(image_paths) == 1:
+                    prompt = (
+                        f"[The user has attached an image. "
+                        f"Use the Read tool to view it at: {image_paths[0]}]\n\n"
+                        + prompt
+                    )
+                else:
+                    paths_list = "\n".join(f"- {p}" for p in image_paths)
+                    prompt = (
+                        f"[The user has attached {len(image_paths)} images. "
+                        f"Use the Read tool to view them:\n{paths_list}]\n\n"
+                        + prompt
+                    )
+
+        # Build command (after all prompt modifications)
+        cmd = [
+            "claude",
+            "-p", prompt,
+        ]
+        if is_first_message:
+            cmd.extend(["--session-id", claude_session_id])
+        else:
+            cmd.extend(["--resume", claude_session_id])
+        cmd.extend([
+            "--output-format", "stream-json",
+            "--verbose",
+            "--dangerously-skip-permissions",
+        ])
+        for d in add_dirs:
+            cmd.extend(["--add-dir", d])
+
+        # Publish a "start" meta-event so the frontend knows streaming began
+        session_broker.publish(session_id, {
+            "type": "start",
+            "session_id": session_id,
+        })
+
+        # Strip CLAUDECODE env var so the CLI doesn't think it's nested
+        clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+
+        # How often to flush accumulated content to the DB (seconds)
+        PERIODIC_SAVE_INTERVAL = 5.0
         # Create a placeholder assistant message in the DB BEFORE streaming
         # starts. This ensures we always have a record, even if the process
         # is killed or the app crashes mid-stream.

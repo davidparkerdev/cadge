@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/hooks", tags=["hooks"])
 
+MAX_HOOK_PAYLOAD_SIZE = 64 * 1024  # 64KB
+
 
 # ---------------------------------------------------------------------------
 # POST /api/hooks/event
@@ -30,6 +32,21 @@ router = APIRouter(prefix="/api/hooks", tags=["hooks"])
 async def receive_hook_event(request: Request):
     """Ingest a raw hook event from a Claude Code hook script."""
     raw = await request.json()
+
+    # Truncate oversized payloads to prevent DB bloat and SSE broadcast of huge events
+    payload_str = json.dumps(raw)
+    if len(payload_str) > MAX_HOOK_PAYLOAD_SIZE:
+        logger.warning(
+            "Hook event payload too large (%d bytes), truncating to metadata only",
+            len(payload_str),
+        )
+        raw = {
+            "event_type": raw.get("event_type") or raw.get("type"),
+            "session_id": raw.get("session_id"),
+            "tool_name": raw.get("tool_name") or raw.get("tool", {}).get("name"),
+            "_truncated": True,
+            "_original_size": len(payload_str),
+        }
 
     event_type = raw.get("event_type") or raw.get("type")
     hook_session_id = raw.get("session_id")
@@ -104,7 +121,10 @@ async def stream_hook_events(request: Request):
         except asyncio.CancelledError:
             pass
         finally:
-            await subscription.aclose()
+            try:
+                await asyncio.shield(subscription.aclose())
+            except (asyncio.CancelledError, Exception):
+                pass
 
     return StreamingResponse(
         event_generator(),

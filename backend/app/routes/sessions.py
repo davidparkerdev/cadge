@@ -52,16 +52,16 @@ async def update_session(session_id: str, body: SessionUpdate):
 
 @router.delete("/{session_id}", status_code=204)
 async def delete_session(session_id: str):
-    # Cancel any running subprocess before deleting DB rows
+    # Cancel any running subprocess first (safe even if session doesn't exist)
     await claude_runner.cancel_session(session_id)
-    # Close all SSE subscribers for this session
+    # Close SSE subscribers
     session_broker.close_session(session_id)
-    # Delete persisted events for this session (also cleans up event conditions)
-    await delete_session_events(session_id)
+    # Delete the session row FIRST -- if it doesn't exist, 404 before touching events
     deleted = await session_store.delete_session(session_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
-    # Clean up per-session locks and process entries to prevent memory leak
+    # Session confirmed deleted -- now clean up events and resources
+    await delete_session_events(session_id)
     claude_runner.cleanup_session_resources(session_id)
     return None
 

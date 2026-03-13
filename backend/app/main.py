@@ -11,7 +11,6 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-import aiosqlite
 import psutil
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,7 +20,7 @@ from app.middleware import RequestMetricsMiddleware
 from app.routes import chat, hooks, logs, sessions
 from app.services import claude_runner
 from app.services.claude_runner import _active_processes, cancel_session
-from app.services.session_store import DB_PATH, cleanup_old_hook_events, init_db
+from app.services.session_store import DB_PATH, _connect_db, cleanup_old_hook_events, init_db
 from app.services.stream_broker import hooks_broker, session_broker
 
 # Replace logging.basicConfig with structured logging
@@ -123,7 +122,7 @@ async def health():
     db_status = "ok"
     db_detail = None
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with _connect_db() as db:
             await db.execute("SELECT 1")
     except Exception as exc:
         db_status = "error"

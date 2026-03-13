@@ -54,6 +54,7 @@ export function useEventStream(
   const agentsRef = useRef<AgentInfo[]>([])
   const lastSeqRef = useRef(0)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const prevSessionIdRef = useRef<string | undefined>(undefined)
 
   // Batch content updates -- instead of setState on every delta,
   // accumulate in ref and flush periodically
@@ -80,6 +81,25 @@ export function useEventStream(
 
     let cleanedUp = false
     let reconnectTimer: number | undefined
+
+    // Only reset state when the session actually changes, not on reconnects
+    const isSessionChange = prevSessionIdRef.current !== sessionId
+    prevSessionIdRef.current = sessionId
+
+    if (isSessionChange) {
+      lastSeqRef.current = 0
+      contentRef.current = ''
+      thinkingRef.current = ''
+      toolsRef.current = []
+      agentsRef.current = []
+      setStreamingContent('')
+      setStreamingThinking('')
+      setTools([])
+      setAgents([])
+      setSummary(null)
+      setIsStreaming(false)
+      setLastSeq(0)
+    }
 
     // Connect with cursor -- resume from last known sequence
     const since = lastSeqRef.current
@@ -288,22 +308,6 @@ export function useEventStream(
       eventSource.close()
       eventSourceRef.current = null
       setIsConnected(false)
-
-      // Reset all content refs and state to prevent stale content
-      // from previous session bleeding into the new session view
-      contentRef.current = ''
-      thinkingRef.current = ''
-      toolsRef.current = []
-      agentsRef.current = []
-      lastSeqRef.current = 0
-      setStreamingContent('')
-      setStreamingThinking('')
-      setTools([])
-      setAgents([])
-      setSummary(null)
-      setIsStreaming(false)
-      setLastSeq(0)
-
       if (flushTimerRef.current !== null) {
         window.clearTimeout(flushTimerRef.current)
         flushTimerRef.current = null

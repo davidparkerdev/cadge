@@ -200,7 +200,11 @@ async def delete_session_events(session_id: str) -> int:
 
 
 async def cleanup_old_events(max_age_days: int = 30) -> int:
-    """Delete events older than max_age_days. Returns count deleted."""
+    """Delete events older than max_age_days. Returns count deleted.
+
+    Also cleans up _session_conditions for sessions that no longer have
+    any events in the DB, preventing unbounded memory growth.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
     async with _connect_db() as db:
         cursor = await db.execute(
@@ -209,7 +213,19 @@ async def cleanup_old_events(max_age_days: int = 30) -> int:
         )
         await db.commit()
         deleted = cursor.rowcount
+
+        if deleted > 0:
+            # Find sessions that still have events in the DB
+            cursor = await db.execute("SELECT DISTINCT session_id FROM events")
+            active_sessions = {row[0] for row in await cursor.fetchall()}
+
+    # Remove in-memory conditions for sessions no longer in the events table
     if deleted > 0:
+        stale = [sid for sid in _session_conditions if sid not in active_sessions]
+        for sid in stale:
+            _session_conditions.pop(sid, None)
+        if stale:
+            logger.info("Cleaned up %d stale session conditions", len(stale))
         logger.info("Cleaned up %d events older than %d days", deleted, max_age_days)
     return deleted
 
