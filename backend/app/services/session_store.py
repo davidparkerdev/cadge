@@ -179,11 +179,12 @@ async def create_session(
     return session
 
 
-async def list_sessions() -> list[dict]:
+async def list_sessions(limit: int = 200) -> list[dict]:
     async with _connect_db() as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
-            "SELECT * FROM sessions ORDER BY updated_at DESC"
+            "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
         )
         rows = await cursor.fetchall()
     return rows  # type: ignore[return-value]
@@ -211,8 +212,6 @@ async def get_session_detail(session_id: str) -> Optional[dict]:
 
 async def delete_session(session_id: str) -> bool:
     async with _connect_db() as db:
-        # Delete messages first (foreign key)
-        await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         cursor = await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await db.commit()
         return cursor.rowcount > 0

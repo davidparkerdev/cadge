@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 
 from app.models.schemas import SessionCreate, SessionDetail, SessionResponse, SessionUpdate
+from app.routes.chat import cleanup_session_task
 from app.services import claude_runner, session_store
 from app.services.event_store import delete_session_events
 from app.services.stream_broker import session_broker
@@ -63,6 +64,7 @@ async def delete_session(session_id: str):
     # Session confirmed deleted -- now clean up events and resources
     await delete_session_events(session_id)
     claude_runner.cleanup_session_resources(session_id)
+    cleanup_session_task(session_id)
     return None
 
 

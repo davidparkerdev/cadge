@@ -271,7 +271,7 @@ async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[di
         else:
             idle_cycles += 1
             if idle_cycles >= max_idle_cycles:
-                logger.info(
+                logger.warning(
                     "event_stream for session %s idle for %d cycles, terminating",
                     session_id, idle_cycles,
                 )

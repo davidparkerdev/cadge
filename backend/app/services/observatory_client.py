@@ -25,6 +25,14 @@ _MAX_PENDING = 50
 _pending_tasks: set[asyncio.Task] = set()
 
 
+async def close() -> None:
+    """Close the HTTP client. Call during app shutdown."""
+    global _client
+    if _client and not _client.is_closed:
+        await _client.aclose()
+        _client = None
+
+
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:

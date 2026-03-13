@@ -122,7 +122,7 @@ export function ChatView() {
   }, [isStreaming, id])
 
   const handleCancel = useCallback(async () => {
-    if (!id || isCancelling) return
+    if (!id || !isStreaming || isCancelling) return
     setIsCancelling(true)
     try {
       await cancelSession(id)
@@ -133,7 +133,16 @@ export function ChatView() {
       // If cancel API fails, reset cancelling state so user can retry
       setIsCancelling(false)
     }
-  }, [id, isCancelling])
+  }, [id, isStreaming, isCancelling])
+
+  // Safety valve: reset isCancelling if stuck for more than 10 seconds
+  useEffect(() => {
+    if (!isCancelling) return
+    const timeout = setTimeout(() => {
+      setIsCancelling(false)
+    }, 10_000)
+    return () => clearTimeout(timeout)
+  }, [isCancelling])
 
   // When the app returns from background (iOS PWA / Capacitor), refetch
   // messages so the user always sees the latest state. Without this, if

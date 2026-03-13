@@ -472,6 +472,14 @@ async def _run_claude(
                 elif delta.get("type") == "input_json_delta":
                     if delta.get("partial_json"):
                         current_tool_json_parts.append(delta["partial_json"])
+                        # Guard against unbounded accumulation for very large tool inputs
+                        total_size = sum(len(p) for p in current_tool_json_parts)
+                        if total_size > 10 * 1024 * 1024:  # 10MB
+                            logger.warning(
+                                "Tool JSON accumulator exceeded 10MB for session %s, clearing",
+                                session_id,
+                            )
+                            current_tool_json_parts = []
             elif event_type == "result":
                 # Final result event from stream-json
                 result_text = event.get("result", "")

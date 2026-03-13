@@ -52,6 +52,21 @@ class MessageSend(BaseModel):
     def content_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("content must not be empty or whitespace-only")
+        if len(v) > 200_000:
+            raise ValueError("Content exceeds 200,000 character limit")
+        return v
+
+    @field_validator("images")
+    @classmethod
+    def validate_images(cls, v):
+        if v is None:
+            return v
+        if len(v) > 5:
+            raise ValueError("Maximum 5 images allowed")
+        MAX_IMAGE_SIZE = 5_000_000  # 5MB per image as base64
+        for i, img in enumerate(v):
+            if len(img) > MAX_IMAGE_SIZE:
+                raise ValueError(f"Image {i} exceeds 5MB limit")
         return v
 
 
@@ -60,6 +75,20 @@ class MessageAnswer(BaseModel):
     question_text: str = Field(alias="questionText")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("answer")
+    @classmethod
+    def answer_length(cls, v: str) -> str:
+        if len(v) > 50_000:
+            raise ValueError("Answer exceeds 50,000 character limit")
+        return v
+
+    @field_validator("question_text")
+    @classmethod
+    def question_text_length(cls, v: str) -> str:
+        if len(v) > 50_000:
+            raise ValueError("Question text exceeds 50,000 character limit")
+        return v
 
 
 class MessageResponse(BaseModel):

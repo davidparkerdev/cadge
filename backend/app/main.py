@@ -6,6 +6,7 @@ spawns claude CLI subprocesses, and streams events to clients via SSE.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -18,7 +19,7 @@ from thelab_observability import ObservabilityMiddleware, setup_logging
 
 from app.middleware import RequestMetricsMiddleware
 from app.routes import chat, hooks, logs, sessions
-from app.services import claude_runner
+from app.services import claude_runner, observatory_client
 from app.services.claude_runner import _active_processes, cancel_session
 from app.services.session_store import DB_PATH, _connect_db, cleanup_old_hook_events, init_db
 from app.services.stream_broker import hooks_broker, session_broker
@@ -37,6 +38,27 @@ _start_monotonic = time.monotonic()
 # Lifespan
 # ---------------------------------------------------------------------------
 
+async def _periodic_cleanup():
+    """Run DB cleanup tasks periodically to prevent unbounded growth."""
+    while True:
+        try:
+            await asyncio.sleep(6 * 3600)  # Every 6 hours
+            from app.services.event_store import cleanup_old_events
+            deleted_events = await cleanup_old_events(max_age_days=30)
+            deleted_hooks = await cleanup_old_hook_events(max_age_days=7)
+            # Checkpoint WAL to prevent unbounded WAL file growth
+            async with _connect_db() as db:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            logger.info(
+                "Periodic cleanup: %d events, %d hook events, WAL checkpointed",
+                deleted_events, deleted_hooks,
+            )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.warning("Periodic cleanup failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Nexus v2 backend starting up")
@@ -46,7 +68,19 @@ async def lifespan(app: FastAPI):
     from app.services.event_store import init_events_table, cleanup_old_events
     await init_events_table()
     await cleanup_old_events(max_age_days=30)
+
+    # Start periodic cleanup task
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
+
     yield
+
+    # Cancel periodic cleanup
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
     logger.info("Nexus v2 backend shutting down")
     # Kill all active Claude subprocesses
     active_session_ids = list(_active_processes.keys())
@@ -61,7 +95,8 @@ async def lifespan(app: FastAPI):
         session_broker.close_session(sid)
     for sid in hooks_broker.active_session_ids():
         hooks_broker.close_session(sid)
-    # Note: events are persisted in SQLite, no cleanup needed on shutdown
+    # Close observatory HTTP client
+    await observatory_client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +176,13 @@ async def health():
     proc = psutil.Process()
     mem = proc.memory_info()
 
+    # DB file size
+    db_size_mb = 0.0
+    try:
+        db_size_mb = round(DB_PATH.stat().st_size / 1024 / 1024, 2)
+    except OSError:
+        pass
+
     return {
         "status": status,
         "uptime_seconds": uptime_seconds,
@@ -155,10 +197,15 @@ async def health():
             "database": {
                 "status": db_status,
                 "detail": db_detail,
+                "size_mb": db_size_mb,
             },
             "stream_broker": {
                 "status": "ok",
                 "active_channels": broker_channels + hooks_channels,
+                "total_subscribers": session_broker.total_subscriber_count() + hooks_broker.total_subscriber_count(),
+            },
+            "observatory": {
+                "pending_tasks": len(observatory_client._pending_tasks),
             },
         },
     }

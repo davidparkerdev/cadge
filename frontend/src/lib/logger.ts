@@ -68,17 +68,41 @@ function pushToBuffer(entry: LogEntry) {
   }
 }
 
+// Circuit breaker for backend logging
+let _consecutiveFailures = 0
+let _circuitOpen = false
+let _circuitCooldown: number | null = null
+const MAX_FAILURES = 3
+const COOLDOWN_MS = 30_000 // 30 seconds
+
 function sendToBackend(entry: LogEntry) {
   if (entry.level === 'debug') return
+  if (_circuitOpen) return
+
   // Fire-and-forget -- don't block on logging
   try {
     fetch(`${API_URL}/api/logs`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entry),
-    }).catch(() => {
-      // Silently fail -- can't log a logging failure
     })
+      .then(() => {
+        // Success -- reset failure count
+        _consecutiveFailures = 0
+      })
+      .catch(() => {
+        _consecutiveFailures++
+        if (_consecutiveFailures >= MAX_FAILURES) {
+          _circuitOpen = true
+          // Auto-reset after cooldown
+          if (_circuitCooldown) clearTimeout(_circuitCooldown)
+          _circuitCooldown = window.setTimeout(() => {
+            _circuitOpen = false
+            _consecutiveFailures = 0
+            _circuitCooldown = null
+          }, COOLDOWN_MS)
+        }
+      })
   } catch {
     // Silently fail
   }

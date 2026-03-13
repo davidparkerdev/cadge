@@ -25,6 +25,13 @@ _background_tasks: set[asyncio.Task] = set()
 _session_tasks: dict[str, asyncio.Task] = {}
 
 
+def cleanup_session_task(session_id: str) -> None:
+    """Cancel and remove the background task for a deleted session."""
+    task = _session_tasks.pop(session_id, None)
+    if task and not task.done():
+        task.cancel()
+
+
 def _spawn_claude_task(session_id: str, coro) -> asyncio.Task:
     """Create a tracked background task with error logging."""
     task = asyncio.create_task(coro)
