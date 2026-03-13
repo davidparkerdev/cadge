@@ -15,7 +15,7 @@ from typing import AsyncGenerator
 
 import aiosqlite
 
-from app.services.session_store import DB_PATH
+from app.services.session_store import DB_PATH, _connect_db
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_events_session_seq ON events(session_id, seq);
 
 async def init_events_table() -> None:
     """Create the events table if it doesn't exist. Call from app lifespan."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.executescript(_CREATE_EVENTS_TABLE)
         await db.commit()
     logger.info("Events table initialized")
@@ -105,7 +105,7 @@ async def append_event(session_id: str, event_type: str, data: dict | None = Non
     now = _now()
     data_json = json.dumps(data or {})
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             """INSERT INTO events (session_id, seq, event_type, data, created_at)
                VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE session_id = ?), ?, ?, ?)
@@ -125,7 +125,7 @@ async def get_events(session_id: str, since_seq: int = 0, limit: int = 5000) -> 
 
     Returns list of dicts: {seq, event_type, data (parsed JSON), created_at}
     """
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             """SELECT seq, event_type, data, created_at
                FROM events
@@ -154,7 +154,7 @@ async def get_events(session_id: str, since_seq: int = 0, limit: int = 5000) -> 
 
 async def get_latest_seq(session_id: str) -> int:
     """Get the latest sequence number for a session. Returns 0 if no events."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM events WHERE session_id = ?",
             (session_id,),
@@ -187,7 +187,7 @@ async def _notify_new_event(session_id: str) -> None:
 
 async def delete_session_events(session_id: str) -> int:
     """Delete all events for a session and clean up its condition. Returns count of deleted rows."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "DELETE FROM events WHERE session_id = ?",
             (session_id,),
@@ -202,7 +202,7 @@ async def delete_session_events(session_id: str) -> int:
 async def cleanup_old_events(max_age_days: int = 30) -> int:
     """Delete events older than max_age_days. Returns count deleted."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "DELETE FROM events WHERE created_at < ?",
             (cutoff,),

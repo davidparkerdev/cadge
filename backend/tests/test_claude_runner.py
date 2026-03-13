@@ -641,25 +641,17 @@ class TestKillStaleProcessesDirect:
 
     async def test_finds_and_kills_pids(self):
         """Should call os.kill(SIGTERM) for each PID found by pgrep."""
-        mock_pgrep = MagicMock()
-        mock_pgrep.returncode = 0
-        mock_pgrep.stdout = "11111\n22222\n"
+        fake_pgrep = AsyncMock()
+        fake_pgrep.returncode = 0
+        fake_pgrep.communicate = AsyncMock(return_value=(b"11111\n22222\n", b""))
 
         with (
-            patch("app.services.claude_runner._subprocess.run", return_value=mock_pgrep),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=fake_pgrep),
             patch("os.kill") as mock_kill,
             patch("os.getpid", return_value=99999),
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
-            # Import fresh and call the actual function
             from app.services import claude_runner as cr_mod
-
-            # Access the real function object from the module
-            real_fn = type(cr_mod)._kill_stale_claude_processes if hasattr(type(cr_mod), '_kill_stale_claude_processes') else None
-
-            # Actually, the simplest approach: re-create the function logic in test
-            # OR just call it after restoring from the fixture's mock.
-            # Since we're NOT using the runner_env fixture here, the function is unpatched.
             result = await cr_mod._kill_stale_claude_processes("test-claude-session")
 
         mock_kill.assert_any_call(11111, signal.SIGTERM)
@@ -669,12 +661,12 @@ class TestKillStaleProcessesDirect:
 
     async def test_skips_own_pid(self):
         """Should not kill its own process."""
-        mock_pgrep = MagicMock()
-        mock_pgrep.returncode = 0
-        mock_pgrep.stdout = "12345\n"
+        fake_pgrep = AsyncMock()
+        fake_pgrep.returncode = 0
+        fake_pgrep.communicate = AsyncMock(return_value=(b"12345\n", b""))
 
         with (
-            patch("app.services.claude_runner._subprocess.run", return_value=mock_pgrep),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=fake_pgrep),
             patch("os.kill") as mock_kill,
             patch("os.getpid", return_value=12345),  # Same as the found PID
             patch("asyncio.sleep", new_callable=AsyncMock),
@@ -687,11 +679,11 @@ class TestKillStaleProcessesDirect:
 
     async def test_returns_false_when_no_matches(self):
         """Should return False when pgrep finds no matching processes."""
-        mock_pgrep = MagicMock()
-        mock_pgrep.returncode = 1
-        mock_pgrep.stdout = ""
+        fake_pgrep = AsyncMock()
+        fake_pgrep.returncode = 1
+        fake_pgrep.communicate = AsyncMock(return_value=(b"", b""))
 
-        with patch("app.services.claude_runner._subprocess.run", return_value=mock_pgrep):
+        with patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=fake_pgrep):
             from app.services import claude_runner as cr_mod
             result = await cr_mod._kill_stale_claude_processes("no-such-session")
 
@@ -699,12 +691,12 @@ class TestKillStaleProcessesDirect:
 
     async def test_handles_process_lookup_error(self):
         """Should handle ProcessLookupError gracefully (process died between pgrep and kill)."""
-        mock_pgrep = MagicMock()
-        mock_pgrep.returncode = 0
-        mock_pgrep.stdout = "99999\n"
+        fake_pgrep = AsyncMock()
+        fake_pgrep.returncode = 0
+        fake_pgrep.communicate = AsyncMock(return_value=(b"99999\n", b""))
 
         with (
-            patch("app.services.claude_runner._subprocess.run", return_value=mock_pgrep),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock, return_value=fake_pgrep),
             patch("os.kill", side_effect=ProcessLookupError("No such process")),
             patch("os.getpid", return_value=1),
         ):
@@ -717,7 +709,8 @@ class TestKillStaleProcessesDirect:
     async def test_handles_subprocess_exception(self):
         """Should handle exceptions from pgrep gracefully."""
         with patch(
-            "app.services.claude_runner._subprocess.run",
+            "asyncio.create_subprocess_exec",
+            new_callable=AsyncMock,
             side_effect=OSError("pgrep not found"),
         ):
             from app.services import claude_runner as cr_mod

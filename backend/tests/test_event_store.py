@@ -9,7 +9,7 @@ from unittest.mock import patch
 import aiosqlite
 import pytest
 
-from app.services import event_store
+from app.services import event_store, session_store
 from app.services.event_store import (
     CONTENT_DELTA,
     STREAM_END,
@@ -37,7 +37,8 @@ async def _db(tmp_path):
     """Create a fresh SQLite database for each test and patch DB_PATH."""
     db_path = str(tmp_path / "test_events.db")
 
-    with patch.object(event_store, "DB_PATH", db_path):
+    with patch.object(session_store, "DB_PATH", db_path), \
+         patch.object(event_store, "DB_PATH", db_path):
         await init_events_table()
         # Clear any leftover conditions from previous tests
         event_store._session_conditions.clear()

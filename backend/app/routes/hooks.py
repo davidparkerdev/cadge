@@ -103,6 +103,8 @@ async def stream_hook_events(request: Request):
                 yield _sse(event)
         except asyncio.CancelledError:
             pass
+        finally:
+            await subscription.aclose()
 
     return StreamingResponse(
         event_generator(),

@@ -288,6 +288,22 @@ export function useEventStream(
       eventSource.close()
       eventSourceRef.current = null
       setIsConnected(false)
+
+      // Reset all content refs and state to prevent stale content
+      // from previous session bleeding into the new session view
+      contentRef.current = ''
+      thinkingRef.current = ''
+      toolsRef.current = []
+      agentsRef.current = []
+      lastSeqRef.current = 0
+      setStreamingContent('')
+      setStreamingThinking('')
+      setTools([])
+      setAgents([])
+      setSummary(null)
+      setIsStreaming(false)
+      setLastSeq(0)
+
       if (flushTimerRef.current !== null) {
         window.clearTimeout(flushTimerRef.current)
         flushTimerRef.current = null

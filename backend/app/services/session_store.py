@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from contextlib import asynccontextmanager
+
 import aiosqlite
 
 logger = logging.getLogger(__name__)
@@ -64,7 +66,7 @@ CREATE INDEX IF NOT EXISTS idx_hook_events_session ON hook_events(session_id);
 
 async def init_db() -> None:
     """Create tables if they don't exist."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.executescript(_CREATE_TABLES)
         await db.commit()
 
@@ -122,6 +124,15 @@ async def init_db() -> None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+@asynccontextmanager
+async def _connect_db():
+    """Open a connection with PRAGMA foreign_keys=ON."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("PRAGMA foreign_keys=ON")
+        yield db
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -158,7 +169,7 @@ async def create_session(
         "created_at": now,
         "updated_at": now,
     }
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             """INSERT INTO sessions (id, title, claude_session_id, status, role, project_name, project_dir, created_at, updated_at)
                VALUES (:id, :title, :claude_session_id, :status, :role, :project_name, :project_dir, :created_at, :updated_at)""",
@@ -169,7 +180,7 @@ async def create_session(
 
 
 async def list_sessions() -> list[dict]:
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
             "SELECT * FROM sessions ORDER BY updated_at DESC"
@@ -179,7 +190,7 @@ async def list_sessions() -> list[dict]:
 
 
 async def get_session(session_id: str) -> Optional[dict]:
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
@@ -199,7 +210,7 @@ async def get_session_detail(session_id: str) -> Optional[dict]:
 
 
 async def delete_session(session_id: str) -> bool:
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         # Delete messages first (foreign key)
         await db.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         cursor = await db.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
@@ -210,7 +221,7 @@ async def delete_session(session_id: str) -> bool:
 async def update_session(session_id: str, title: str) -> Optional[dict]:
     """Update the session title and updated_at timestamp. Returns updated session or None."""
     now = _now()
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
             (title, now, session_id),
@@ -223,7 +234,7 @@ async def update_session(session_id: str, title: str) -> Optional[dict]:
 
 async def touch_session(session_id: str) -> None:
     """Update the updated_at timestamp."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             "UPDATE sessions SET updated_at = ? WHERE id = ?",
             (_now(), session_id),
@@ -233,7 +244,7 @@ async def touch_session(session_id: str) -> None:
 
 async def mark_claude_initialized(session_id: str) -> None:
     """Mark that this session has been used with --session-id (first CLI call done)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             "UPDATE sessions SET claude_initialized = 1 WHERE id = ?",
             (session_id,),
@@ -266,7 +277,7 @@ async def create_message(
         "status": status,
         "created_at": now,
     }
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             """INSERT INTO messages (id, session_id, role, content, tool_calls, thinking, is_complete, status, created_at)
                VALUES (:id, :session_id, :role, :content, :tool_calls, :thinking, :is_complete, :status, :created_at)""",
@@ -278,13 +289,21 @@ async def create_message(
     return msg
 
 
+_ALLOWED_MESSAGE_FIELDS = frozenset({
+    "content", "tool_calls", "thinking", "is_complete", "status", "summary"
+})
+
+
 async def update_message(message_id: str, **fields) -> None:
     """Update specific fields on a message."""
     if not fields:
         return
+    invalid = set(fields) - _ALLOWED_MESSAGE_FIELDS
+    if invalid:
+        raise ValueError(f"Unknown message fields: {invalid}")
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     values = list(fields.values()) + [message_id]
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             f"UPDATE messages SET {set_clause} WHERE id = ?",
             values,
@@ -294,13 +313,13 @@ async def update_message(message_id: str, **fields) -> None:
 
 async def delete_message(message_id: str) -> None:
     """Delete a single message by ID."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute("DELETE FROM messages WHERE id = ?", (message_id,))
         await db.commit()
 
 
 async def list_messages(session_id: str, limit: int = 200, offset: int = 0) -> list[dict]:
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         db.row_factory = _row_to_dict  # type: ignore[assignment]
         cursor = await db.execute(
             "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?",
@@ -319,7 +338,7 @@ async def list_messages(session_id: str, limit: int = 200, offset: int = 0) -> l
 
 async def count_messages(session_id: str) -> int:
     """Return the total number of messages for a session."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -335,7 +354,7 @@ async def count_messages(session_id: str) -> int:
 async def cleanup_old_hook_events(max_age_days: int = 7) -> int:
     """Delete hook events older than max_age_days. Returns count of deleted rows."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_age_days)).isoformat()
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         cursor = await db.execute(
             "DELETE FROM hook_events WHERE created_at < ?", (cutoff,)
         )
@@ -351,7 +370,7 @@ async def list_hook_events(
     offset: int = 0,
 ) -> tuple[list[dict], int]:
     """Return recent hook events with pagination. Returns (events, total_count)."""
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         # Get total count
         cursor = await db.execute("SELECT COUNT(*) FROM hook_events")
         row = await cursor.fetchone()
@@ -391,7 +410,7 @@ async def create_hook_event(
         "payload": json.dumps(payload or {}),
         "created_at": now,
     }
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with _connect_db() as db:
         await db.execute(
             """INSERT INTO hook_events (id, session_id, event_type, tool_name, payload, created_at)
                VALUES (:id, :session_id, :event_type, :tool_name, :payload, :created_at)""",

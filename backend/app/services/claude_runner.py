@@ -13,7 +13,6 @@ import json
 import logging
 import os
 import signal
-import subprocess as _subprocess
 import tempfile
 import time
 from typing import Optional
@@ -64,12 +63,14 @@ async def _kill_stale_claude_processes(claude_session_id: str) -> bool:
     """
     try:
         # pgrep -f matches against the full command line
-        result = _subprocess.run(
-            ["pgrep", "-f", claude_session_id],
-            capture_output=True, text=True, timeout=5,
+        proc = await asyncio.create_subprocess_exec(
+            "pgrep", "-f", claude_session_id,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode == 0 and result.stdout.strip():
-            pids = [p.strip() for p in result.stdout.strip().split("\n") if p.strip()]
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        if proc.returncode == 0 and stdout:
+            pids = [p.strip() for p in stdout.decode().strip().split("\n") if p.strip()]
             killed_any = False
             for pid_str in pids:
                 try:
@@ -172,8 +173,9 @@ async def send_message(
     if lock.locked() and session_id in _active_processes:
         logger.info("Cancelling active process for session %s before sending new message", session_id)
         await cancel_session(session_id)
-        # Brief delay for the Claude CLI to release its session lock file
-        await asyncio.sleep(0.5)
+        # No sleep needed -- async with lock below will block until the
+        # previous _run_claude finishes its cleanup and releases the lock,
+        # guaranteeing STREAM_END is written before our STREAM_START.
 
     async with lock:
         await _run_claude(session_id, prompt, images)
@@ -696,6 +698,13 @@ async def _run_claude(
             "session_id": session_id,
             "error": "Internal error running claude subprocess",
         })
+        # Even on error, if the CLI consumed --session-id, we must mark
+        # initialized so subsequent calls use --resume instead of --session-id.
+        if is_first_message and process is not None:
+            try:
+                await mark_claude_initialized(session_id)
+            except Exception:
+                logger.warning("Failed to mark session initialized after error", exc_info=True)
     finally:
         _active_processes.pop(session_id, None)
         # Cancel stderr drain if still running

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import AsyncGenerator
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,8 @@ class StreamBroker:
     ) -> None:
         # session_id -> set of asyncio.Queue
         self._subscribers: dict[str, set[asyncio.Queue]] = {}
-        # session_id -> list of events from the current streaming run
-        self._replay_buffer: dict[str, list[dict]] = {}
+        # session_id -> deque of events from the current streaming run
+        self._replay_buffer: dict[str, deque[dict]] = {}
         self._buffer_size = replay_buffer_size
         self._max_queue_size = max_queue_size
 
@@ -140,14 +141,12 @@ class StreamBroker:
         # -- Replay buffer management --
         if event_type in _STREAM_START_TYPES:
             # New streaming run: reset buffer
-            self._replay_buffer[session_id] = []
+            self._replay_buffer[session_id] = deque(maxlen=self._buffer_size)
 
         # Buffer events during an active streaming run
         buf = self._replay_buffer.get(session_id)
         if buf is not None:
             buf.append(event)
-            if len(buf) > self._buffer_size:
-                buf.pop(0)
 
         if event_type in _STREAM_END_TYPES:
             # Streaming done: clear buffer (no need to replay completed runs)

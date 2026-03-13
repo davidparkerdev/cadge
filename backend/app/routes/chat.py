@@ -21,14 +21,21 @@ router = APIRouter(prefix="/api/sessions/{session_id}", tags=["chat"])
 # Also prevents GC from collecting running tasks.
 _background_tasks: set[asyncio.Task] = set()
 
+# Track background tasks by session_id for cancel-then-send coordination
+_session_tasks: dict[str, asyncio.Task] = {}
 
-def _spawn_claude_task(coro) -> asyncio.Task:
+
+def _spawn_claude_task(session_id: str, coro) -> asyncio.Task:
     """Create a tracked background task with error logging."""
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
+    _session_tasks[session_id] = task
 
     def _on_done(t: asyncio.Task):
         _background_tasks.discard(t)
+        # Only remove from _session_tasks if it's still our task
+        if _session_tasks.get(session_id) is t:
+            _session_tasks.pop(session_id, None)
         if t.cancelled():
             return
         exc = t.exception()
@@ -84,11 +91,12 @@ async def send_message(session_id: str, body: MessageSend):
 
     # Spawn claude runner as a tracked background task
     _spawn_claude_task(
+        session_id,
         claude_runner.send_message(
             session_id=session_id,
             prompt=body.content,
             images=body.images,
-        )
+        ),
     )
 
     return MessageSendResponse(messageId=msg["id"], status="streaming")
@@ -120,10 +128,11 @@ async def answer_question(session_id: str, body: MessageAnswer):
 
     # Spawn claude runner as a tracked background task
     _spawn_claude_task(
+        session_id,
         claude_runner.send_message(
             session_id=session_id,
             prompt=prompt,
-        )
+        ),
     )
 
     return MessageSendResponse(messageId=msg["id"], status="streaming")
