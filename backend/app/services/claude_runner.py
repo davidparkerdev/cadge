@@ -399,6 +399,16 @@ async def _run_claude(
                     session_id,
                 )
                 process.kill()
+                # Wait for the killed process to fully exit and release
+                # resources (e.g., CLI session lock file). Timeout prevents
+                # hanging indefinitely if the process ignores SIGKILL.
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "claude process did not exit within 5s after SIGKILL for session %s",
+                        session_id,
+                    )
                 break
             if not line:
                 break

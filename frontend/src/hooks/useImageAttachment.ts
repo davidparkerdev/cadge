@@ -230,23 +230,15 @@ export function useImageAttachment(): UseImageAttachmentReturn {
         return
       }
 
-      // Determine how many we can actually add
-      const currentCount = images.length
-      const remaining = MAX_IMAGES - currentCount
-      if (remaining <= 0) {
-        setError('Maximum 5 images allowed')
-        return
-      }
-
-      const filesToProcess = imageFiles.slice(0, remaining)
-      if (imageFiles.length > remaining) {
-        setError('Maximum 5 images allowed')
-      }
-
-      const newImages: StagedImage[] = []
+      // Process images first, then use functional state update to check
+      // the current count at commit time. This prevents a race where two
+      // rapid addImages calls both see stale images.length from the closure.
+      const processed: StagedImage[] = []
       let failCount = 0
 
-      for (const file of filesToProcess) {
+      for (const file of imageFiles) {
+        if (processed.length >= MAX_IMAGES) break
+
         const previewUrl = URL.createObjectURL(file)
         log.info('image', `Processing: ${file.name} (${file.type || 'unknown type'}, ${(file.size / 1024).toFixed(0)}KB)`)
         try {
@@ -261,7 +253,7 @@ export function useImageAttachment(): UseImageAttachmentReturn {
             log.info('image', `Raw base64 read OK: ${file.name} (${(base64.length / 1024).toFixed(0)}KB)`)
           }
 
-          newImages.push({
+          processed.push({
             id: uniqueId(),
             file,
             previewUrl,
@@ -275,14 +267,31 @@ export function useImageAttachment(): UseImageAttachmentReturn {
         }
       }
 
-      if (failCount > 0 && newImages.length === 0) {
+      if (failCount > 0 && processed.length === 0) {
         const errDetail = `Failed to process ${failCount} image${failCount > 1 ? 's' : ''} - check console for details`
         setError(errDetail)
         log.error('image', errDetail)
       }
 
-      if (newImages.length > 0) {
-        setImages((prev) => [...prev, ...newImages])
+      if (processed.length > 0) {
+        // Functional update: use prev.length for the limit check so we
+        // always see the latest state, not a stale closure value.
+        setImages((prev) => {
+          const remaining = MAX_IMAGES - prev.length
+          if (remaining <= 0) {
+            // Revoke URLs for images we can't add
+            processed.forEach((img) => URL.revokeObjectURL(img.previewUrl))
+            setError('Maximum 5 images allowed')
+            return prev
+          }
+          const toAdd = processed.slice(0, remaining)
+          // Revoke URLs for images we couldn't fit
+          processed.slice(remaining).forEach((img) => URL.revokeObjectURL(img.previewUrl))
+          if (processed.length > remaining) {
+            setError('Maximum 5 images allowed')
+          }
+          return [...prev, ...toAdd]
+        })
       }
 
       // Reset the input so the same file can be selected again
@@ -290,7 +299,7 @@ export function useImageAttachment(): UseImageAttachmentReturn {
         inputRef.current.value = ''
       }
     },
-    [images.length]
+    [] // No dependency on images.length -- uses functional state update
   )
 
   const removeImage = useCallback((id: string) => {

@@ -40,8 +40,9 @@ async def _db(tmp_path):
     with patch.object(session_store, "DB_PATH", db_path), \
          patch.object(event_store, "DB_PATH", db_path):
         await init_events_table()
-        # Clear any leftover conditions from previous tests
+        # Clear any leftover conditions and deleted sessions from previous tests
         event_store._session_conditions.clear()
+        event_store._deleted_sessions.clear()
         yield db_path
 
 

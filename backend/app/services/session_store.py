@@ -370,6 +370,11 @@ async def list_hook_events(
 ) -> tuple[list[dict], int]:
     """Return recent hook events with pagination. Returns (events, total_count)."""
     async with _connect_db() as db:
+        # Wrap COUNT + SELECT in an explicit transaction so the total
+        # is consistent with the returned rows (prevents a concurrent
+        # INSERT between the two queries from causing a mismatch).
+        await db.execute("BEGIN")
+
         # Get total count
         cursor = await db.execute("SELECT COUNT(*) FROM hook_events")
         row = await cursor.fetchone()
@@ -382,6 +387,8 @@ async def list_hook_events(
             (limit, offset),
         )
         rows = await cursor.fetchall()
+
+        await db.execute("COMMIT")
 
     # Deserialize payload from JSON string to dict
     for row in rows:

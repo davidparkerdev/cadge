@@ -31,22 +31,29 @@ MAX_HOOK_PAYLOAD_SIZE = 64 * 1024  # 64KB
 @router.post("/event", status_code=201)
 async def receive_hook_event(request: Request):
     """Ingest a raw hook event from a Claude Code hook script."""
-    raw = await request.json()
+    # Check raw body size BEFORE parsing JSON to avoid deserializing
+    # arbitrarily large payloads into memory.
+    body_bytes = await request.body()
+    body_size = len(body_bytes)
 
-    # Truncate oversized payloads to prevent DB bloat and SSE broadcast of huge events
-    payload_str = json.dumps(raw)
-    if len(payload_str) > MAX_HOOK_PAYLOAD_SIZE:
+    if body_size > MAX_HOOK_PAYLOAD_SIZE:
+        # Only parse enough to extract metadata fields for the truncated record.
+        # We still need to parse the JSON to get event_type/session_id/tool_name,
+        # but we've already bounded the memory cost by reading body_bytes above.
         logger.warning(
             "Hook event payload too large (%d bytes), truncating to metadata only",
-            len(payload_str),
+            body_size,
         )
+        raw = json.loads(body_bytes)
         raw = {
             "event_type": raw.get("event_type") or raw.get("type"),
             "session_id": raw.get("session_id"),
             "tool_name": raw.get("tool_name") or raw.get("tool", {}).get("name"),
             "_truncated": True,
-            "_original_size": len(payload_str),
+            "_original_size": body_size,
         }
+    else:
+        raw = json.loads(body_bytes)
 
     event_type = raw.get("event_type") or raw.get("type")
     hook_session_id = raw.get("session_id")

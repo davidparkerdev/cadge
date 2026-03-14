@@ -18,6 +18,10 @@ OBSERVATORY_API = "http://localhost:33420"
 
 _client: httpx.AsyncClient | None = None
 
+# Set to True during shutdown to prevent in-flight tasks from
+# creating a new httpx.AsyncClient after close() has been called.
+_shutdown: bool = False
+
 # Backpressure: track pending fire-and-forget tasks.
 # If more than _MAX_PENDING tasks are in-flight, new pushes are skipped
 # to prevent unbounded memory growth when Observatory is slow or down.
@@ -27,14 +31,18 @@ _pending_tasks: set[asyncio.Task] = set()
 
 async def close() -> None:
     """Close the HTTP client. Call during app shutdown."""
-    global _client
+    global _client, _shutdown
+    _shutdown = True
     if _client and not _client.is_closed:
         await _client.aclose()
         _client = None
 
 
-def _get_client() -> httpx.AsyncClient:
+def _get_client() -> httpx.AsyncClient | None:
+    """Get or create the HTTP client. Returns None if shutdown."""
     global _client
+    if _shutdown:
+        return None
     if _client is None or _client.is_closed:
         _client = httpx.AsyncClient(timeout=5.0)
     return _client
@@ -73,6 +81,8 @@ async def _async_push(endpoint: str, data: dict[str, Any]) -> None:
     """Async POST with error suppression."""
     try:
         client = _get_client()
+        if client is None:
+            return  # Shutdown in progress, skip silently
         await client.post(f"{OBSERVATORY_API}{endpoint}", json=data)
     except Exception as exc:
         logger.debug("Observatory push failed (%s): %s", endpoint, exc)

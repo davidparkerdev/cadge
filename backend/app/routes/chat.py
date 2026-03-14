@@ -203,16 +203,25 @@ async def stream_events_v2(
 async def _with_keepalive_v2(gen, interval: int, request: Request):
     """Wrap a generator with keepalive pings and disconnect detection."""
     gen_iter = gen.__aiter__()
-    while True:
-        if await request.is_disconnected():
-            break
+    try:
+        while True:
+            if await request.is_disconnected():
+                break
+            try:
+                item = await asyncio.wait_for(gen_iter.__anext__(), timeout=interval)
+                yield item
+            except asyncio.TimeoutError:
+                yield _sse({"type": "ping"})
+            except StopAsyncIteration:
+                break
+    finally:
+        # Ensure the inner event_stream generator is properly closed
+        # on client disconnect, so its resources are released immediately
+        # rather than waiting for GC.
         try:
-            item = await asyncio.wait_for(gen_iter.__anext__(), timeout=interval)
-            yield item
-        except asyncio.TimeoutError:
-            yield _sse({"type": "ping"})
-        except StopAsyncIteration:
-            break
+            await asyncio.shield(gen_iter.aclose())
+        except (asyncio.CancelledError, Exception):
+            pass
 
 
 def _sse(data: dict) -> str:

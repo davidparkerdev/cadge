@@ -270,11 +270,36 @@ export function useEventStream(
       }
     }
 
+    // Reconnect with exponential backoff and attempt limit
+    let reconnectAttempts = 0
+    const MAX_RECONNECT_ATTEMPTS = 10
+    const BASE_DELAY_MS = 2000
+
+    eventSource.onopen = () => {
+      // Reset attempt counter on successful connection
+      reconnectAttempts = 0
+    }
+
     eventSource.onerror = () => {
       setIsConnected(false)
       if (eventSource.readyState === EventSource.CLOSED) {
-        log.error('events', `Connection closed: session=${sessionId}`)
-        // Auto-reconnect with cursor -- will resume from lastSeqRef.current
+        reconnectAttempts++
+        if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+          log.error(
+            'events',
+            `Connection failed after ${MAX_RECONNECT_ATTEMPTS} attempts, giving up: session=${sessionId}`
+          )
+          return
+        }
+        // Exponential backoff: 2s, 4s, 8s, 16s, ... capped at 30s
+        const delay = Math.min(
+          BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1),
+          30000
+        )
+        log.error(
+          'events',
+          `Connection closed: session=${sessionId}, attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}, retrying in ${delay}ms`
+        )
         reconnectTimer = window.setTimeout(() => {
           if (!cleanedUp) {
             log.info(
@@ -283,7 +308,7 @@ export function useEventStream(
             )
             setReconnectTrigger((n) => n + 1)
           }
-        }, 2000)
+        }, delay)
       }
     }
 

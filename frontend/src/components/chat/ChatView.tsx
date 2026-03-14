@@ -107,10 +107,12 @@ export function ChatView() {
   // When streaming ends via SSE, re-fetch messages from DB to ensure
   // nothing was missed (e.g. reconnection gap). Also clear cancelling state.
   useEffect(() => {
+    let cancelled = false
     if (prevIsStreaming.current && !isStreaming && id) {
       setIsCancelling(false)
       getMessages(id)
         .then((msgs) => {
+          if (cancelled) return
           const filtered = msgs.filter(
             (m) => !(m.status === 'streaming' && !m.content?.trim())
           )
@@ -119,6 +121,9 @@ export function ChatView() {
         .catch(() => {})
     }
     prevIsStreaming.current = isStreaming
+    return () => {
+      cancelled = true
+    }
   }, [isStreaming, id])
 
   const handleCancel = useCallback(async () => {
@@ -175,16 +180,32 @@ export function ChatView() {
 
       setSendError(null)
 
+      // Optimistically show the user message immediately so the UI
+      // doesn't feel like nothing happened after hitting send.
+      const optimisticMsg: Message = {
+        id: `optimistic-${Date.now()}`,
+        session_id: id,
+        role: 'user',
+        content,
+        is_complete: true,
+        status: 'complete',
+        created_at: new Date().toISOString(),
+      }
+      setMessages((prev) => [...prev, optimisticMsg])
+
       try {
         await sendMessage(id, content, images)
-        // Server persists the user message synchronusly before spawning
-        // Claude, so re-fetch to show the server-authoritative version.
+        // Server persists the user message synchronously before spawning
+        // Claude, so re-fetch to replace the optimistic message with the
+        // server-authoritative version.
         const msgs = await getMessages(id)
         const filtered = msgs.filter(
           (m) => !(m.status === 'streaming' && !m.content?.trim())
         )
         setMessages(filtered)
       } catch (err) {
+        // Remove the optimistic message on failure
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticMsg.id))
         const errMsg =
           err instanceof Error ? err.message : 'Failed to send message'
         setSendError(errMsg)

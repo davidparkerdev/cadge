@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import { Capacitor } from '@capacitor/core'
+import TTS from '../plugins/tts'
 
 export interface UseTTSReturn {
   isSpeaking: boolean
@@ -17,7 +19,133 @@ export interface UseTTSReturn {
 const CHARS_PER_SECOND = 20
 const SKIP_CHARS = CHARS_PER_SECOND * 10 // ~10 seconds of speech
 
-export function useTTS(): UseTTSReturn {
+const isNative = Capacitor.isNativePlatform()
+
+// ---------------------------------------------------------------------------
+// Native implementation (Capacitor / iOS)
+// Uses AVSpeechSynthesizer via native plugin. Proper pause/resume support,
+// word-level boundary events, no cancel-and-re-speak hack needed.
+// ---------------------------------------------------------------------------
+
+function useNativeTTS(): UseTTSReturn {
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [isPaused, setIsPaused] = useState(false)
+  const [progress, setProgress] = useState(0)
+
+  const fullTextRef = useRef('')
+  const offsetRef = useRef(0)
+
+  // Set up native plugin listeners
+  useEffect(() => {
+    const listeners: Array<{ remove: () => void }> = []
+
+    const setup = async () => {
+      const startListener = await TTS.addListener('start', () => {
+        setIsSpeaking(true)
+        setIsPaused(false)
+      })
+      listeners.push(startListener)
+
+      const endListener = await TTS.addListener('end', () => {
+        setIsSpeaking(false)
+        setIsPaused(false)
+        setProgress(1)
+      })
+      listeners.push(endListener)
+
+      const pauseListener = await TTS.addListener('pause', () => {
+        setIsSpeaking(false)
+        setIsPaused(true)
+      })
+      listeners.push(pauseListener)
+
+      const resumeListener = await TTS.addListener('resume', () => {
+        setIsSpeaking(true)
+        setIsPaused(false)
+      })
+      listeners.push(resumeListener)
+
+      const boundaryListener = await TTS.addListener('boundary', (data) => {
+        setProgress(data.progress)
+        offsetRef.current = data.charIndex
+      })
+      listeners.push(boundaryListener)
+    }
+
+    setup()
+
+    return () => {
+      listeners.forEach((l) => l.remove())
+      TTS.stop().catch(() => {})
+    }
+  }, [])
+
+  const speak = useCallback((text: string) => {
+    fullTextRef.current = text
+    offsetRef.current = 0
+    setProgress(0)
+    TTS.speak({ text }).catch(() => {})
+  }, [])
+
+  const pause = useCallback(() => {
+    TTS.pause().catch(() => {})
+  }, [])
+
+  const resume = useCallback(() => {
+    TTS.resume().catch(() => {})
+  }, [])
+
+  const stop = useCallback(() => {
+    fullTextRef.current = ''
+    offsetRef.current = 0
+    setIsSpeaking(false)
+    setIsPaused(false)
+    setProgress(0)
+    TTS.stop().catch(() => {})
+  }, [])
+
+  const skipForward = useCallback(() => {
+    if (!fullTextRef.current) return
+    const newOffset = Math.min(
+      offsetRef.current + SKIP_CHARS,
+      fullTextRef.current.length
+    )
+    TTS.speak({
+      text: fullTextRef.current,
+      offset: newOffset,
+    }).catch(() => {})
+  }, [])
+
+  const skipBack = useCallback(() => {
+    if (!fullTextRef.current) return
+    const newOffset = Math.max(offsetRef.current - SKIP_CHARS, 0)
+    TTS.speak({
+      text: fullTextRef.current,
+      offset: newOffset,
+    }).catch(() => {})
+  }, [])
+
+  return {
+    isSpeaking,
+    isPaused,
+    speak,
+    pause,
+    resume,
+    stop,
+    skipForward,
+    skipBack,
+    isSupported: true,
+    progress,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Web Speech API implementation (desktop browsers only)
+// No iOS workarounds needed -- iOS uses native plugin above.
+// Desktop browsers support pause/resume properly.
+// ---------------------------------------------------------------------------
+
+function useWebTTS(): UseTTSReturn {
   const [isSpeaking, setIsSpeaking] = useState(false)
   const [isPaused, setIsPaused] = useState(false)
   const [progress, setProgress] = useState(0)
@@ -26,13 +154,11 @@ export function useTTS(): UseTTSReturn {
   const offsetRef = useRef(0)
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const voicesRef = useRef<SpeechSynthesisVoice[]>([])
-  // Track last known character position from onboundary (more accurate than progress state)
-  const lastBoundaryPosRef = useRef(0)
 
   const isSupported =
     typeof window !== 'undefined' && 'speechSynthesis' in window
 
-  // Load voices asynchronously -- getVoices() returns [] on first call in many browsers
+  // Load voices
   useEffect(() => {
     if (!isSupported) return
 
@@ -40,10 +166,7 @@ export function useTTS(): UseTTSReturn {
       voicesRef.current = window.speechSynthesis.getVoices()
     }
 
-    // Try immediately (may already be loaded)
     loadVoices()
-
-    // Listen for async voice loading
     window.speechSynthesis.addEventListener('voiceschanged', loadVoices)
     return () => {
       window.speechSynthesis.removeEventListener('voiceschanged', loadVoices)
@@ -70,7 +193,6 @@ export function useTTS(): UseTTSReturn {
     (text: string, offset: number) => {
       if (!isSupported) return
 
-      // Cancel any current speech
       window.speechSynthesis.cancel()
 
       const remainingText = text.slice(offset)
@@ -101,23 +223,15 @@ export function useTTS(): UseTTSReturn {
         setProgress(1)
       }
 
-      // Track progress via boundary events.
-      // Also save absolute char position in a ref so pause() can use it
-      // directly -- on iOS, onboundary fires infrequently (sentence-level),
-      // so the ref gives us the most accurate position we have.
       utterance.onboundary = (event: SpeechSynthesisEvent) => {
         if (fullTextRef.current.length > 0) {
           const currentPosition = offset + event.charIndex
-          lastBoundaryPosRef.current = currentPosition
+          offsetRef.current = currentPosition
           setProgress(
             Math.min(currentPosition / fullTextRef.current.length, 1)
           )
         }
       }
-
-      // NOTE: We do NOT use utterance.onpause/onresume because iOS Safari
-      // does not support speechSynthesis.pause()/resume(). Instead we implement
-      // pause/resume using cancel + speakFromOffset (see below).
 
       utteranceRef.current = utterance
       offsetRef.current = offset
@@ -130,40 +244,32 @@ export function useTTS(): UseTTSReturn {
     (text: string) => {
       fullTextRef.current = text
       offsetRef.current = 0
-      lastBoundaryPosRef.current = 0
       setProgress(0)
       speakFromOffset(text, 0)
     },
     [speakFromOffset]
   )
 
-  // iOS-compatible pause: cancel current speech, save position, resume by re-speaking
-  // (speechSynthesis.pause()/resume() are no-ops on iOS Safari)
+  // Desktop browsers support pause/resume natively -- no cancel-and-re-speak hack
   const pause = useCallback(() => {
-    if (!isSupported || !isSpeaking) return
-
-    // Use the last boundary position from onboundary (ref), not React state.
-    // iOS fires onboundary at sentence boundaries only, so this is the best
-    // position we have -- it won't jump backward by more than one sentence.
-    offsetRef.current = lastBoundaryPosRef.current
-
-    window.speechSynthesis.cancel()
+    if (!isSupported || !window.speechSynthesis.speaking) return
+    window.speechSynthesis.pause()
     setIsSpeaking(false)
     setIsPaused(true)
-  }, [isSupported, isSpeaking])
+  }, [isSupported])
 
   const resume = useCallback(() => {
     if (!isSupported || !isPaused) return
+    window.speechSynthesis.resume()
     setIsPaused(false)
-    speakFromOffset(fullTextRef.current, offsetRef.current)
-  }, [isSupported, isPaused, speakFromOffset])
+    setIsSpeaking(true)
+  }, [isSupported, isPaused])
 
   const stop = useCallback(() => {
     if (!isSupported) return
     window.speechSynthesis.cancel()
     fullTextRef.current = ''
     offsetRef.current = 0
-    lastBoundaryPosRef.current = 0
     setIsSpeaking(false)
     setIsPaused(false)
     setProgress(0)
@@ -171,10 +277,8 @@ export function useTTS(): UseTTSReturn {
 
   const skipForward = useCallback(() => {
     if (!fullTextRef.current) return
-
-    const currentPos = lastBoundaryPosRef.current
     const newOffset = Math.min(
-      currentPos + SKIP_CHARS,
+      offsetRef.current + SKIP_CHARS,
       fullTextRef.current.length
     )
     speakFromOffset(fullTextRef.current, newOffset)
@@ -182,9 +286,7 @@ export function useTTS(): UseTTSReturn {
 
   const skipBack = useCallback(() => {
     if (!fullTextRef.current) return
-
-    const currentPos = lastBoundaryPosRef.current
-    const newOffset = Math.max(currentPos - SKIP_CHARS, 0)
+    const newOffset = Math.max(offsetRef.current - SKIP_CHARS, 0)
     speakFromOffset(fullTextRef.current, newOffset)
   }, [speakFromOffset])
 
@@ -210,3 +312,10 @@ export function useTTS(): UseTTSReturn {
     progress,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Export: pick implementation at module load time (not at render time).
+// This satisfies React's rules of hooks -- the same function is always called.
+// ---------------------------------------------------------------------------
+
+export const useTTS: () => UseTTSReturn = isNative ? useNativeTTS : useWebTTS

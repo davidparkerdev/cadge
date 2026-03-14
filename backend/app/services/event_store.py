@@ -50,6 +50,10 @@ RAW_EVENT = "raw_event"
 
 _session_conditions: dict[str, asyncio.Condition] = {}
 
+# Track sessions whose events have been deleted so SSE waiters can
+# detect the deletion and exit gracefully instead of hanging.
+_deleted_sessions: set[str] = set()
+
 
 def _get_condition(session_id: str) -> asyncio.Condition:
     """Get or create an asyncio.Condition for a session."""
@@ -194,6 +198,15 @@ async def delete_session_events(session_id: str) -> int:
         )
         await db.commit()
         deleted = cursor.rowcount
+    # Track that this session's events have been deleted so SSE waiters
+    # can detect the deletion and exit gracefully.
+    _deleted_sessions.add(session_id)
+    # Notify any waiters on the old Condition so they wake up and see
+    # the session is gone, rather than hanging for up to 30 minutes.
+    condition = _session_conditions.get(session_id)
+    if condition:
+        async with condition:
+            condition.notify_all()
     # Clean up the per-session condition to prevent memory leak
     _session_conditions.pop(session_id, None)
     return deleted
@@ -226,6 +239,10 @@ async def cleanup_old_events(max_age_days: int = 30) -> int:
             _session_conditions.pop(sid, None)
         if stale:
             logger.info("Cleaned up %d stale session conditions", len(stale))
+        # Also clean up _deleted_sessions entries for sessions that no longer
+        # have any events -- they've served their purpose of waking SSE waiters.
+        stale_deleted = _deleted_sessions - active_sessions
+        _deleted_sessions.difference_update(stale_deleted)
         logger.info("Cleaned up %d events older than %d days", deleted, max_age_days)
     return deleted
 
@@ -259,8 +276,23 @@ async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[di
     idle_cycles = 0
     max_idle_cycles = 60  # 60 * 30s timeout = 30 min max idle
     while True:
+        # Check if the session's events were deleted while we were waiting
+        if session_id in _deleted_sessions:
+            logger.info(
+                "event_stream for session %s exiting: session events deleted",
+                session_id,
+            )
+            return
         notified = await wait_for_events(session_id, timeout=30.0)
         if notified:
+            # Re-check after waking up -- the notification may have been
+            # from delete_session_events() rather than a new event.
+            if session_id in _deleted_sessions:
+                logger.info(
+                    "event_stream for session %s exiting: session events deleted",
+                    session_id,
+                )
+                return
             idle_cycles = 0
             events = await get_events(session_id, since_seq=last_seq)
             for event in events:
