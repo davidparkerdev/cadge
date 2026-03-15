@@ -4,6 +4,11 @@ import { cn } from '../../lib/cn'
 import type { Message } from '../../api/types'
 import { ToolCallCard } from './ToolCallCard'
 
+function toDataUri(src: string): string {
+  if (src.startsWith('data:')) return src
+  return `data:image/png;base64,${src}`
+}
+
 interface MessageBubbleProps {
   message: Message
   showToolCalls?: boolean
@@ -20,6 +25,7 @@ function isInterrupted(message: Message): boolean {
 export function MessageBubble({ message, showToolCalls = false }: MessageBubbleProps) {
   const [thinkingExpanded, setThinkingExpanded] = useState(false)
   const [isExpanded, setIsExpanded] = useState(false)
+  const [expandedImage, setExpandedImage] = useState<string | null>(null)
   const isUser = message.role === 'user'
   const interrupted = isInterrupted(message)
 
@@ -85,7 +91,25 @@ export function MessageBubble({ message, showToolCalls = false }: MessageBubbleP
             </div>
           )}
 
-        {/* Message content -- with summary/expand toggle for assistant messages */}
+        {isUser && message.images && message.images.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {message.images.map((img, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setExpandedImage(toDataUri(img))}
+                className="block rounded-lg overflow-hidden border border-border/50 hover:border-accent/40 transition-colors"
+              >
+                <img
+                  src={toDataUri(img)}
+                  alt={`Attachment ${i + 1}`}
+                  className="max-w-[200px] max-h-[150px] object-contain"
+                />
+              </button>
+            ))}
+          </div>
+        )}
+
         {hasSummary && !isExpanded ? (
           <div className="text-sm whitespace-pre-wrap break-words leading-relaxed [overflow-wrap:anywhere]">
             {message.summary}
@@ -109,7 +133,6 @@ export function MessageBubble({ message, showToolCalls = false }: MessageBubbleP
           </button>
         )}
 
-        {/* Interrupted / incomplete response indicator */}
         {interrupted && (
           <div className="mt-2 flex items-center gap-1.5 text-xs text-amber-400 font-medium">
             <WarningTriangle className="w-3.5 h-3.5 flex-shrink-0" />
@@ -120,6 +143,23 @@ export function MessageBubble({ message, showToolCalls = false }: MessageBubbleP
         )}
 
       </div>
+
+      {expandedImage && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"
+          onClick={() => setExpandedImage(null)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setExpandedImage(null) }}
+          tabIndex={0}
+          autoFocus
+          role="dialog"
+        >
+          <img
+            src={expandedImage}
+            alt="Expanded attachment"
+            className="max-w-full max-h-full object-contain rounded-lg"
+          />
+        </div>
+      )}
     </div>
   )
 }

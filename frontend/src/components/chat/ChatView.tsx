@@ -187,6 +187,7 @@ export function ChatView() {
         session_id: id,
         role: 'user',
         content,
+        images,
         is_complete: true,
         status: 'complete',
         created_at: new Date().toISOString(),

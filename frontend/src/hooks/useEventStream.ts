@@ -108,10 +108,15 @@ export function useEventStream(
     const eventSource = new EventSource(url)
     eventSourceRef.current = eventSource
 
+    let reconnectAttempts = 0
+    const MAX_RECONNECT_ATTEMPTS = 10
+    const BASE_DELAY_MS = 2000
+
     eventSource.onopen = () => {
       log.info('events', `Connected: session=${sessionId}`)
       setIsConnected(true)
       setError(null)
+      reconnectAttempts = 0
     }
 
     eventSource.onmessage = (event) => {
@@ -268,16 +273,6 @@ export function useEventStream(
       } catch (parseErr) {
         log.warn('events', 'Failed to parse event', parseErr)
       }
-    }
-
-    // Reconnect with exponential backoff and attempt limit
-    let reconnectAttempts = 0
-    const MAX_RECONNECT_ATTEMPTS = 10
-    const BASE_DELAY_MS = 2000
-
-    eventSource.onopen = () => {
-      // Reset attempt counter on successful connection
-      reconnectAttempts = 0
     }
 
     eventSource.onerror = () => {

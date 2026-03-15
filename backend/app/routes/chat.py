@@ -88,12 +88,12 @@ async def send_message(session_id: str, body: MessageSend):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Persist the user message
     msg = await session_store.create_message(
         session_id=session_id,
         role="user",
         content=body.content,
         is_complete=True,
+        images=body.images,
     )
 
     # Spawn claude runner as a tracked background task

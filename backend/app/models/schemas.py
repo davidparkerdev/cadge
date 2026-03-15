@@ -98,6 +98,7 @@ class MessageResponse(BaseModel):
     content: str
     tool_calls: Optional[list] = None
     thinking: Optional[str] = None
+    images: Optional[list[str]] = None
     is_complete: bool
     status: str = "complete"
     summary: Optional[str] = None

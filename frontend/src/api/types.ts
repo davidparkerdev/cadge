@@ -16,6 +16,7 @@ export interface Message {
   content: string
   tool_calls?: ToolCall[]
   thinking?: string
+  images?: string[]
   is_complete: boolean
   status?: MessageStatus
   created_at: string

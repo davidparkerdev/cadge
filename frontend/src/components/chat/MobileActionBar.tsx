@@ -34,7 +34,7 @@ import { PlaybackBar } from './PlaybackBar'
 import { ImagePreviewBar } from './ImagePreviewBar'
 
 interface MobileActionBarProps {
-  onSend: (content: string, images?: string[]) => void
+  onSend: (content: string, images?: string[]) => void | Promise<void>
   onScrollToBottom: () => void
   disabled?: boolean
   lastAssistantMessage?: string
@@ -202,19 +202,13 @@ export function MobileActionBar({
     }
   }, [tts, lastAssistantMessage])
 
-  const handleSend = useCallback(() => {
+  const handleSend = useCallback(async () => {
     if (disabled) return
 
     let content = ''
 
     if (voice.isRecording) {
-      // Capture the transcript FIRST from React state (includes both final + interim).
-      // This must happen BEFORE stopRecording(), which calls abort() and clears state.
       content = (voice.transcript + ' ' + voice.interimTranscript).trim()
-      // Now stop recording -- this uses abort() to immediately release the mic.
-      // stopRecording() sets isRecording=false, which triggers the useEffect that
-      // normally preserves transcript to typedText. We disable that by setting
-      // prevRecordingRef to false FIRST, so the effect sees false->false (no transition).
       prevRecordingRef.current = false
       voice.stopRecording()
     } else {
@@ -223,12 +217,11 @@ export function MobileActionBar({
 
     if (!content) return
 
-    // Collect base64 images from staged attachments
     const images = imageAttachment.images
       .map((img) => img.base64)
       .filter((b): b is string => !!b)
 
-    onSend(content, images.length > 0 ? images : undefined)
+    await onSend(content, images.length > 0 ? images : undefined)
     setTypedText('')
     imageAttachment.clearImages()
   }, [disabled, voice, typedText, onSend, imageAttachment])

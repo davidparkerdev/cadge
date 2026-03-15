@@ -38,7 +38,7 @@ from app.services.stream_broker import session_broker
 logger = logging.getLogger(__name__)
 
 # Active subprocesses: session_id -> asyncio.subprocess.Process
-_active_processes: dict[str, asyncio.subprocess.Process] = {}
+_active_processes: dict[str, Optional[asyncio.subprocess.Process]] = {}
 
 # Per-session locks to prevent concurrent claude processes on the same session.
 # Without this, two asyncio tasks can both pass the cancel check before either
@@ -259,6 +259,28 @@ async def _run_claude(
     _model: str = ""  # Extracted from message_start event
 
     try:
+        # Register session as "streaming" immediately so is_session_streaming()
+        # returns True before image processing or subprocess launch.
+        _active_processes[session_id] = None
+
+        session_broker.publish(session_id, {
+            "type": "start",
+            "session_id": session_id,
+        })
+
+        placeholder = await create_message(
+            session_id=session_id,
+            role="assistant",
+            content="",
+            is_complete=False,
+            status="streaming",
+        )
+        assistant_msg_id = placeholder["id"]
+
+        await append_event(session_id, STREAM_START, {
+            "message_id": assistant_msg_id,
+        })
+
         if images:
             image_paths: list[str] = []
             for i, b64 in enumerate(images):
@@ -305,7 +327,12 @@ async def _run_claude(
                         + prompt
                     )
 
-        # Build command (after all prompt modifications)
+        if session_id not in _active_processes:
+            logger.info("Session %s was cancelled during image processing, aborting", session_id)
+            if assistant_msg_id:
+                await _delete_message(assistant_msg_id)
+            return
+
         cmd = [
             "claude",
             "-p", prompt,
@@ -322,32 +349,10 @@ async def _run_claude(
         for d in add_dirs:
             cmd.extend(["--add-dir", d])
 
-        # Publish a "start" meta-event so the frontend knows streaming began
-        session_broker.publish(session_id, {
-            "type": "start",
-            "session_id": session_id,
-        })
-
         # Strip CLAUDECODE env var so the CLI doesn't think it's nested
         clean_env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-        # How often to flush accumulated content to the DB (seconds)
         PERIODIC_SAVE_INTERVAL = 5.0
-        # Create a placeholder assistant message in the DB BEFORE streaming
-        # starts. This ensures we always have a record, even if the process
-        # is killed or the app crashes mid-stream.
-        placeholder = await create_message(
-            session_id=session_id,
-            role="assistant",
-            content="",
-            is_complete=False,
-            status="streaming",
-        )
-        assistant_msg_id = placeholder["id"]
-
-        await append_event(session_id, STREAM_START, {
-            "message_id": assistant_msg_id,
-        })
 
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -762,17 +767,17 @@ def cleanup_session_resources(session_id: str) -> None:
 
 
 async def cancel_session(session_id: str) -> bool:
-    """Kill the running subprocess for a session, if any."""
+    if session_id not in _active_processes:
+        return False
     proc = _active_processes.get(session_id)
     if proc is None:
-        return False
+        _active_processes.pop(session_id, None)
+        return True
     proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=5.0)
     except asyncio.TimeoutError:
         proc.kill()
-        # Must wait after kill too, so the process fully exits and
-        # releases the Claude CLI session lock file.
         try:
             await asyncio.wait_for(proc.wait(), timeout=3.0)
         except asyncio.TimeoutError:
@@ -783,7 +788,6 @@ async def cancel_session(session_id: str) -> bool:
         "session_id": session_id,
     })
     await append_event(session_id, STREAM_CANCELLED, {})
-    # Push cancellation event to Observatory
     push_session_event(
         session_id=session_id,
         event_type="cancel",

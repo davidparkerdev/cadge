@@ -6,12 +6,24 @@ backend/nexus_v2.db (next to the app/ package).
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+try:
+    from PIL import Image
+    _HAS_PILLOW = True
+except ImportError:
+    _HAS_PILLOW = False
+
+_MAX_THUMBNAIL_WIDTH = 400
+_MAX_THUMBNAIL_QUALITY = 60
+_FALLBACK_MAX_BYTES = 200 * 1024
 
 from contextlib import asynccontextmanager
 
@@ -111,6 +123,13 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migrate: add images column to messages (JSON-encoded list of base64 strings)
+        try:
+            await db.execute("ALTER TABLE messages ADD COLUMN images TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Fix any messages left in 'streaming' status from a previous crash
         await db.execute(
             "UPDATE messages SET status = 'incomplete' WHERE status = 'streaming'"
@@ -139,6 +158,31 @@ def _now() -> str:
 
 def _uuid() -> str:
     return str(uuid.uuid4())
+
+
+def _compress_image_to_thumbnail(b64_str: str) -> str:
+    raw_b64 = b64_str.split(",", 1)[-1] if "," in b64_str else b64_str
+    if _HAS_PILLOW:
+        try:
+            data = base64.b64decode(raw_b64)
+            img = Image.open(io.BytesIO(data))
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            if img.width > _MAX_THUMBNAIL_WIDTH:
+                ratio = _MAX_THUMBNAIL_WIDTH / img.width
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=_MAX_THUMBNAIL_QUALITY)
+            return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+        except Exception:
+            logger.warning("Pillow thumbnail failed, falling back to truncation", exc_info=True)
+    if len(raw_b64) > _FALLBACK_MAX_BYTES:
+        raw_b64 = raw_b64[:_FALLBACK_MAX_BYTES]
+    prefix = ""
+    if "," in b64_str:
+        prefix = b64_str.split(",", 1)[0] + ","
+    return prefix + raw_b64
 
 
 def _row_to_dict(cursor: aiosqlite.Cursor, row: aiosqlite.Row) -> dict:
@@ -263,9 +307,14 @@ async def create_message(
     thinking: Optional[str] = None,
     is_complete: bool = True,
     status: str = "complete",
+    images: Optional[list[str]] = None,
 ) -> dict:
     now = _now()
-    msg = {
+    thumbnails = None
+    if images:
+        thumbnails = [_compress_image_to_thumbnail(img) for img in images]
+    images_json = json.dumps(thumbnails) if thumbnails else None
+    db_msg = {
         "id": _uuid(),
         "session_id": session_id,
         "role": role,
@@ -274,18 +323,18 @@ async def create_message(
         "thinking": thinking,
         "is_complete": is_complete,
         "status": status,
+        "images": images_json,
         "created_at": now,
     }
     async with _connect_db() as db:
         await db.execute(
-            """INSERT INTO messages (id, session_id, role, content, tool_calls, thinking, is_complete, status, created_at)
-               VALUES (:id, :session_id, :role, :content, :tool_calls, :thinking, :is_complete, :status, :created_at)""",
-            msg,
+            """INSERT INTO messages (id, session_id, role, content, tool_calls, thinking, is_complete, status, images, created_at)
+               VALUES (:id, :session_id, :role, :content, :tool_calls, :thinking, :is_complete, :status, :images, :created_at)""",
+            db_msg,
         )
         await db.commit()
-    # Touch parent session
     await touch_session(session_id)
-    return msg
+    return {**db_msg, "images": thumbnails}
 
 
 _ALLOWED_MESSAGE_FIELDS = frozenset({
@@ -332,6 +381,11 @@ async def list_messages(session_id: str, limit: int = 200, offset: int = 0) -> l
                 row["tool_calls"] = json.loads(row["tool_calls"])
             except (json.JSONDecodeError, TypeError):
                 row["tool_calls"] = []
+        if row.get("images") and isinstance(row["images"], str):
+            try:
+                row["images"] = json.loads(row["images"])
+            except (json.JSONDecodeError, TypeError):
+                row["images"] = None
     return rows  # type: ignore[return-value]
 
 
