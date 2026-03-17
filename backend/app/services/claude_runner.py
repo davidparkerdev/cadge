@@ -434,18 +434,18 @@ async def _run_claude(
             # Accumulate content for persistence
             event_type = event.get("type", "")
             if event_type == "assistant":
-                # The assistant event carries the FULL assembled message.
-                # Text and thinking content are already accumulated from
-                # content_block_delta events, so we must NOT append them
-                # here -- doing so would DOUBLE the content in the DB.
-                # We only extract tool_use blocks (which contain the
-                # complete tool input) and process tool_result for agent
-                # tracking.
                 content = event.get("message", {}).get("content", "")
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict):
-                            if block.get("type") == "tool_use":
+                            if block.get("type") == "text":
+                                text = block.get("text", "")
+                                if text and not full_content_parts:
+                                    full_content_parts.append(text)
+                                    await append_event(session_id, CONTENT_DELTA, {
+                                        "text": text,
+                                    })
+                            elif block.get("type") == "tool_use":
                                 tool_calls.append(block)
                             elif block.get("type") == "tool_result":
                                 tool_use_id = block.get("tool_use_id")

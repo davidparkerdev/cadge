@@ -255,20 +255,21 @@ async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[di
 
     First yields all existing events from DB where seq > since_seq (catch-up).
     Then enters a loop: wait_for_events(), query new events, yield them.
-    Terminates after yielding a terminal event (stream_end, stream_error,
-    stream_cancelled) so SSE connections don't poll the DB forever.
+    Terminates after yielding a terminal event during the LIVE phase only.
+    Historical terminal events during catch-up are yielded but do NOT terminate
+    the generator -- this prevents rapid reconnect storms when opening sessions
+    with multiple completed messages.
 
     Yields dicts: {seq, event_type, data, created_at}
     """
     last_seq = since_seq
 
-    # Phase 1: catch-up -- yield all existing events after since_seq
+    # Phase 1: catch-up -- yield all existing events after since_seq.
+    # Do NOT terminate on terminal events here -- they're historical.
     events = await get_events(session_id, since_seq=last_seq)
     for event in events:
         yield event
         last_seq = event["seq"]
-        if event["event_type"] in _TERMINAL_EVENT_TYPES:
-            return
 
     # Phase 2: live -- wait for new events and yield them
     # Cap idle iterations to prevent infinite loops if no events ever arrive

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.models.schemas import MessageAnswer, MessageResponse, MessageSend, MessageSendResponse
 from app.services import claude_runner, session_store
-from app.services.event_store import event_stream
+from app.services.event_store import event_stream, get_latest_seq
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +143,15 @@ async def answer_question(session_id: str, body: MessageAnswer):
     )
 
     return MessageSendResponse(messageId=msg["id"], status="streaming")
+
+
+@router.get("/events/latest-seq")
+async def get_latest_event_seq(session_id: str):
+    session = await session_store.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    seq = await get_latest_seq(session_id)
+    return {"seq": seq}
 
 
 # ---------------------------------------------------------------------------
