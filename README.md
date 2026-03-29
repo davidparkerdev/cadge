@@ -1,5 +1,7 @@
 # Cadge
 
+> **v0.1.0 -- Early development.** This is an active work-in-progress. When ready for general use, this project will move to [davidparkercodes/cadge](https://github.com/davidparkercodes/cadge).
+
 A local-first command center for managing multiple AI coding agents. Run concurrent sessions across providers, monitor agent activity in real-time, and keep full history of everything your agents do.
 
 Built as a daily-driver tool, not a demo. If you use AI coding agents heavily, Cadge gives you a single place to see and control all of them.
