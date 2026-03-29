@@ -1,6 +1,6 @@
 #!/bin/bash
-# Uninstall Nexus v2 hooks from Claude Code settings
-# This script safely removes only the nexus-v2 hook entries
+# Uninstall Cadge hooks from Claude Code settings
+# This script safely removes only the cadge hook entries
 # without affecting any other hooks in the settings.
 
 set -e
@@ -12,10 +12,10 @@ if [ ! -f "$SETTINGS_FILE" ]; then
     exit 0
 fi
 
-echo "Uninstalling Nexus v2 hooks..."
+echo "Uninstalling Cadge hooks..."
 echo "  Settings file: $SETTINGS_FILE"
 
-# Use python3 to safely remove nexus-v2 hooks from settings
+# Use python3 to safely remove cadge hooks from settings
 SETTINGS_FILE="$SETTINGS_FILE" python3 << 'PYEOF'
 import json
 import os
@@ -42,18 +42,18 @@ for event_name in list(hooks.keys()):
     filtered_rules = []
 
     for rule in event_rules:
-        # Filter out hooks that reference nexus-v2-hook.sh
+        # Filter out hooks that reference cadge-hook.sh
         filtered_hooks = [
             h for h in rule.get("hooks", [])
-            if not h.get("command", "").endswith("nexus-v2-hook.sh")
+            if not h.get("command", "").endswith("cadge-hook.sh")
         ]
 
         if filtered_hooks:
-            # Keep the rule but with nexus-v2 hooks removed
+            # Keep the rule but with cadge hooks removed
             rule["hooks"] = filtered_hooks
             filtered_rules.append(rule)
         elif rule.get("hooks") and not filtered_hooks:
-            # All hooks in this rule were nexus-v2, drop the entire rule
+            # All hooks in this rule were cadge, drop the entire rule
             removed_count += 1
         else:
             # Rule had no hooks to begin with, keep it
@@ -74,9 +74,9 @@ with open(settings_file, "w") as f:
     json.dump(settings, f, indent=2)
     f.write("\n")
 
-print(f"  Removed {removed_count} Nexus v2 hook entries")
+print(f"  Removed {removed_count} Cadge hook entries")
 print(f"  Settings written to {settings_file}")
 PYEOF
 
-echo "Done! Nexus v2 hooks have been removed."
+echo "Done! Cadge hooks have been removed."
 echo "Restart any running Claude Code sessions for changes to take effect."

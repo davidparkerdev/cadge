@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stargate Start - launches API + UI with clean shutdown on Ctrl+C
+# Cadge Start - launches API + UI with clean shutdown on Ctrl+C
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,7 +24,7 @@ cleanup() {
     [ -n "$UI_PID" ] && kill "$UI_PID" 2>/dev/null && echo -e "  ${CYAN}Stopped UI (PID $UI_PID)${NC}"
     # Kill any remaining children
     wait 2>/dev/null
-    echo -e "${GREEN}Stargate stopped.${NC}"
+    echo -e "${GREEN}Cadge stopped.${NC}"
     exit 0
 }
 
@@ -57,7 +57,7 @@ fi
 # ── Start services ──────────────────────────────────────────────────
 
 echo ""
-echo -e "${CYAN}Starting Stargate${NC}"
+echo -e "${CYAN}Starting Cadge${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Start backend API

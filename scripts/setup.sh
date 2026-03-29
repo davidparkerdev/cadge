@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stargate Setup - run once on a new machine (idempotent, safe to re-run)
+# Cadge Setup - run once on a new machine (idempotent, safe to re-run)
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +18,7 @@ fail() { echo -e "  ${RED}✗${NC} $1"; exit 1; }
 info() { echo -e "  ${CYAN}…${NC} $1"; }
 
 echo ""
-echo -e "${CYAN}Stargate Setup${NC}"
+echo -e "${CYAN}Cadge Setup${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # ── 1. Check prerequisites ──────────────────────────────────────────
@@ -42,7 +42,7 @@ if command -v claude >/dev/null 2>&1; then
     ok "claude CLI installed"
 else
     echo -e "  ${YELLOW}⚠${NC} claude CLI not found. Install: https://docs.anthropic.com/en/docs/claude-code"
-    echo -e "  ${YELLOW}⚠${NC} Stargate can still start, but sessions won't work without it."
+    echo -e "  ${YELLOW}⚠${NC} Cadge can still start, but sessions won't work without it."
 fi
 
 # ── 2. Backend: Python venv + dependencies ───────────────────────────
@@ -99,7 +99,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""
-echo "  Run ./scripts/start.sh to start Stargate"
+echo "  Run ./scripts/start.sh to start Cadge"
 echo "  UI:  http://localhost:33400"
 echo "  API: http://localhost:33401"
 echo ""

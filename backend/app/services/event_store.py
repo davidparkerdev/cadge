@@ -2,7 +2,7 @@
 
 Stores all streaming events in SQLite with per-session sequence numbers
 and provides an asyncio notification mechanism for real-time SSE delivery.
-Uses the same database as session_store (nexus_v2.db).
+Uses the same database as session_store (cadge.db).
 """
 
 from __future__ import annotations
@@ -299,8 +299,6 @@ async def event_stream(session_id: str, since_seq: int = 0) -> AsyncGenerator[di
             for event in events:
                 yield event
                 last_seq = event["seq"]
-                if event["event_type"] in _TERMINAL_EVENT_TYPES:
-                    return
         else:
             idle_cycles += 1
             if idle_cycles >= max_idle_cycles:

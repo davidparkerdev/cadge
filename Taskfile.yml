@@ -12,12 +12,12 @@ tasks:
       - ./scripts/setup.sh
 
   start:
-    desc: Start Stargate (API + UI)
+    desc: Start Cadge (API + UI)
     cmds:
       - ./scripts/start.sh
 
   stop:
-    desc: Stop Stargate
+    desc: Stop Cadge
     cmds:
       - ./scripts/stop.sh
 

@@ -1,4 +1,4 @@
-"""Shared fixtures for Nexus v2 backend integration tests."""
+"""Shared fixtures for Cadge backend integration tests."""
 
 from __future__ import annotations
 

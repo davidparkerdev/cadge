@@ -1,6 +1,6 @@
 """Frontend log ingestion endpoint.
 
-Receives structured log entries from the Stargate frontend and writes them
+Receives structured log entries from the Cadge frontend and writes them
 to the backend logger, giving persistent visibility into client-side errors.
 Error and warn level logs are also pushed to Observatory for alerting.
 """
@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from app.services.observatory_client import push_frontend_error
 
 router = APIRouter(prefix="/api/logs", tags=["logs"])
-logger = logging.getLogger("stargate.frontend")
+logger = logging.getLogger("cadge.frontend")
 
 
 class LogEntry(BaseModel):

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test.describe('Mobile Stargate (MobileActionBar)', () => {
+test.describe('Mobile Cadge (MobileActionBar)', () => {
   test.beforeEach(({}, testInfo) => {
     test.skip(testInfo.project.name !== 'mobile', 'Mobile only')
   })
@@ -78,7 +78,7 @@ test.describe('Mobile Stargate (MobileActionBar)', () => {
     await expect(modalTextarea).toBeVisible()
 
     // Type a message
-    await modalTextarea.fill('Hello from Stargate')
+    await modalTextarea.fill('Hello from Cadge')
 
     // Click the Send button in the modal (aria-label="Send")
     await page.locator('button[aria-label="Send"]').click()
@@ -87,7 +87,7 @@ test.describe('Mobile Stargate (MobileActionBar)', () => {
     await expect(page).not.toHaveURL(/\/session\/new/, { timeout: 15000 })
 
     // User message should be visible in the chat
-    await expect(page.getByText('Hello from Stargate')).toBeVisible()
+    await expect(page.getByText('Hello from Cadge')).toBeVisible()
   })
 
   test('previous/next buttons are disabled on new session', async ({

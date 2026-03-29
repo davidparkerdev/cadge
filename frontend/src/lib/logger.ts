@@ -1,5 +1,5 @@
 /**
- * Stargate Logger
+ * Cadge Logger
  *
  * Structured logging for the frontend. All logs are:
  * 1. Written to the browser console with category prefix
@@ -164,5 +164,5 @@ export const log = {
 
 // Expose on window for debugging from console
 if (typeof window !== 'undefined') {
-  ;(window as unknown as Record<string, unknown>).__stargate_log = log
+  ;(window as unknown as Record<string, unknown>).__cadge_log = log
 }

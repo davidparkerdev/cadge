@@ -1,7 +1,7 @@
 """Tests for message persistence: status tracking, periodic saves, crash recovery.
 
 These tests verify that messages survive interrupted streams, crashes, and
-app restarts -- the core reliability guarantees of Nexus v2.
+app restarts -- the core reliability guarantees of Cadge.
 """
 
 from __future__ import annotations

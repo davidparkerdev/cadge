@@ -1,10 +1,10 @@
-# Nexus v2 - Claude Code Hooks
+# Cadge - Claude Code Hooks
 
-Hooks that stream Claude Code lifecycle events to the Nexus v2 API in real time. This gives Nexus v2 full visibility into what Claude Code sessions are doing -- tool calls, prompts, session starts/stops, errors, and more.
+Hooks that stream Claude Code lifecycle events to the Cadge API in real time. This gives Cadge full visibility into what Claude Code sessions are doing -- tool calls, prompts, session starts/stops, errors, and more.
 
 ## How it works
 
-A single shell script (`nexus-v2-hook.sh`) handles all event types. Claude Code pipes JSON to the script on stdin for each lifecycle event. The script POSTs that JSON to the Nexus v2 API and exits immediately (fire-and-forget via background curl) so it never blocks Claude Code.
+A single shell script (`cadge-hook.sh`) handles all event types. Claude Code pipes JSON to the script on stdin for each lifecycle event. The script POSTs that JSON to the Cadge API and exits immediately (fire-and-forget via background curl) so it never blocks Claude Code.
 
 ## Events covered
 
@@ -37,7 +37,7 @@ This merges hook configuration into `~/.claude/settings.json` without overwritin
 ./uninstall-hooks.sh
 ```
 
-Removes only the Nexus v2 hook entries, leaving all other settings and hooks intact.
+Removes only the Cadge hook entries, leaving all other settings and hooks intact.
 
 ## API endpoint
 
@@ -58,4 +58,4 @@ The `PreToolUse` event can be extended to support an approval/rejection flow. In
 2. Wait for a response with an approval decision
 3. Return the decision to Claude Code (approve, reject, or modify)
 
-This would allow Nexus v2 to act as a gatekeeper for tool execution. The hook script and API endpoint are designed with this extension in mind.
+This would allow Cadge to act as a gatekeeper for tool execution. The hook script and API endpoint are designed with this extension in mind.

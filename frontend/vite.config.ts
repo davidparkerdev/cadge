@@ -17,7 +17,7 @@ export default defineConfig({
       devOptions: { enabled: true, type: 'module' },
       includeAssets: ['favicon.svg', 'pwa-192x192.png', 'pwa-512x512.png'],
       workbox: {
-        cacheId: `stargate-v${pkg.version}`,
+        cacheId: `cadge-v${pkg.version}`,
         cleanupOutdatedCaches: true,
         skipWaiting: true,
         clientsClaim: true,
@@ -44,9 +44,9 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: 'Stargate',
-        short_name: 'Stargate',
-        description: 'Stargate',
+        name: 'Cadge',
+        short_name: 'Cadge',
+        description: 'Cadge',
         theme_color: '#0f0f0f',
         background_color: '#0f0f0f',
         display: 'standalone',

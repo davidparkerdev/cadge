@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Nexus v2 live smoke test -- exercises every API endpoint against a running instance.
+"""Cadge live smoke test -- exercises every API endpoint against a running instance.
 
 Uses only stdlib (urllib) so it works in any Python 3.9+ environment with no pip installs.
 """
@@ -345,12 +345,12 @@ TESTS = [
 
 def main():
     global BASE_URL
-    parser = argparse.ArgumentParser(description="Nexus v2 live smoke test")
+    parser = argparse.ArgumentParser(description="Cadge live smoke test")
     parser.add_argument("--url", default=BASE_URL, help="Base API URL (default: %(default)s)")
     args = parser.parse_args()
     BASE_URL = args.url.rstrip("/")
 
-    print(f"\n{BOLD}Nexus v2 Smoke Test{RESET}")
+    print(f"\n{BOLD}Cadge Smoke Test{RESET}")
     print(f"{DIM}{BASE_URL}{RESET}\n")
 
     total_start = time.time()

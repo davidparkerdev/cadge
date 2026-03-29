@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet, useNavigate, useLocation } from 'react-router-dom'
 import {
   Layout,
   Sidebar,
@@ -8,7 +8,8 @@ import {
   SidebarFooter,
   useSidebar,
 } from '../ui/Layout'
-import { Menu, Plus } from 'iconoir-react'
+import { Menu, Plus, Settings as SettingsIcon } from 'iconoir-react'
+import { cn } from '../../lib/cn'
 import { SessionsProvider, useSessionsContext } from '../../contexts/SessionsContext'
 import { SessionList } from '../sessions/SessionList'
 import { NewSessionModal } from '../sessions/NewSessionModal'
@@ -19,8 +20,8 @@ export function AppLayout() {
       <Layout className="!h-dvh">
         <Sidebar width="w-72">
           <SidebarHeader>
-            <h1 className="text-lg font-semibold text-text-primary">Stargate</h1>
-            <p className="text-xs text-text-secondary mt-0.5">Claude Code Chat</p>
+            <h1 className="text-lg font-semibold text-text-primary">Cadge</h1>
+            <p className="text-xs text-text-secondary mt-0.5">AI Chat</p>
           </SidebarHeader>
 
           <SidebarNav className="p-0">
@@ -28,7 +29,7 @@ export function AppLayout() {
           </SidebarNav>
 
           <SidebarFooter>
-            <span>Stargate</span>
+            <SidebarSettingsLink />
           </SidebarFooter>
         </Sidebar>
 
@@ -38,6 +39,28 @@ export function AppLayout() {
         </main>
       </Layout>
     </SessionsProvider>
+  )
+}
+
+function SidebarSettingsLink() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const isActive = location.pathname === '/settings'
+
+  return (
+    <button
+      type="button"
+      onClick={() => navigate('/settings')}
+      className={cn(
+        'flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm transition-colors touch-manipulation',
+        isActive
+          ? 'bg-accent/10 text-accent'
+          : 'text-text-secondary hover:text-text-primary hover:bg-surface-tertiary'
+      )}
+    >
+      <SettingsIcon className="w-4 h-4" />
+      <span>Settings</span>
+    </button>
   )
 }
 
@@ -52,6 +75,8 @@ function MobileHeader() {
     role?: string
     projectName?: string
     projectDir?: string
+    providerId?: string
+    model?: string
   }) => {
     try {
       const session = await create(config)
@@ -69,24 +94,34 @@ function MobileHeader() {
         onClose={() => setIsNewSessionOpen(false)}
         onCreate={handleCreate}
       />
-      <div className="flex items-center gap-3 px-3 py-2 border-b border-border bg-surface-secondary md:hidden">
-        <button
-          type="button"
-          onClick={toggle}
-          className="p-2.5 -m-1 rounded text-text-secondary hover:text-text-primary active:bg-surface-tertiary transition-colors touch-manipulation"
-          aria-label="Toggle navigation"
-        >
-          <Menu className="w-5 h-5" />
-        </button>
-        <span className="text-sm font-medium text-text-primary">Stargate</span>
-        <button
-          type="button"
-          onClick={() => setIsNewSessionOpen(true)}
-          className="ml-auto p-2.5 -m-1 rounded text-teal-400 hover:text-teal-300 active:bg-surface-tertiary transition-colors touch-manipulation"
-          aria-label="New session"
-        >
-          <Plus className="w-5 h-5" />
-        </button>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-surface-secondary md:hidden">
+        <span className="text-sm font-medium text-text-primary">Cadge</span>
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => navigate('/settings')}
+            className="p-2.5 -m-1 rounded text-text-secondary hover:text-text-primary active:bg-surface-tertiary transition-colors touch-manipulation"
+            aria-label="Settings"
+          >
+            <SettingsIcon className="w-4.5 h-4.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsNewSessionOpen(true)}
+            className="p-2.5 -m-1 rounded text-teal-400 hover:text-teal-300 active:bg-surface-tertiary transition-colors touch-manipulation"
+            aria-label="New session"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick={toggle}
+            className="p-2.5 -m-1 rounded text-text-secondary hover:text-text-primary active:bg-surface-tertiary transition-colors touch-manipulation"
+            aria-label="Toggle navigation"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+        </div>
       </div>
     </>
   )

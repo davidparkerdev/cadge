@@ -1,6 +1,6 @@
-"""Nexus v2 Backend - FastAPI application.
+"""Cadge Backend - FastAPI application.
 
-A backend for Nexus v2, a UI on top of Claude Code. Manages chat sessions,
+A backend for Cadge, a UI on top of Claude Code. Manages chat sessions,
 spawns claude CLI subprocesses, and streams events to clients via SSE.
 """
 
@@ -18,14 +18,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from thelab_observability import ObservabilityMiddleware, setup_logging
 
 from app.middleware import RequestMetricsMiddleware
-from app.routes import chat, hooks, logs, sessions
+from app.routes import chat, hooks, logs, providers, sessions, settings
 from app.services import claude_runner, observatory_client
-from app.services.claude_runner import _active_processes, cancel_session
+from app.services.claude_runner import cancel_session
+from app.services.providers.registry import all_providers
 from app.services.session_store import DB_PATH, _connect_db, cleanup_old_hook_events, init_db
 from app.services.stream_broker import hooks_broker, session_broker
 
 # Replace logging.basicConfig with structured logging
-setup_logging("nexus-v2-api", json_output=False)
+setup_logging("cadge-api", json_output=False)
 
 logger = logging.getLogger(__name__)
 
@@ -61,12 +62,14 @@ async def _periodic_cleanup():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Nexus v2 backend starting up")
+    logger.info("Cadge backend starting up")
     await init_db()
     await cleanup_old_hook_events(max_age_days=7)
     # Initialize event store and clean up old events
     from app.services.event_store import init_events_table, cleanup_old_events
     await init_events_table()
+    from app.services.settings_store import init_settings_table
+    await init_settings_table()
     await cleanup_old_events(max_age_days=30)
 
     # Start periodic cleanup task
@@ -81,10 +84,10 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
-    logger.info("Nexus v2 backend shutting down")
-    # Kill all active Claude subprocesses
-    active_session_ids = list(_active_processes.keys())
-    for sid in active_session_ids:
+    logger.info("Cadge backend shutting down")
+    # Cancel all active provider sessions
+    from app.services.providers.claude_code import _active_processes as _claude_active
+    for sid in list(_claude_active.keys()):
         try:
             await cancel_session(sid)
             logger.info("Cancelled subprocess for session %s on shutdown", sid)
@@ -104,7 +107,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Nexus v2 API",
+    title="Cadge API",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -120,7 +123,7 @@ app.add_middleware(
 )
 
 # Observability middleware (request tracing with request_id, correlation_id, duration)
-app.add_middleware(ObservabilityMiddleware, logger_name="nexus-v2-api.http")
+app.add_middleware(ObservabilityMiddleware, logger_name="cadge-api.http")
 
 # Request metrics middleware (pushes to Observatory, no local storage)
 app.add_middleware(RequestMetricsMiddleware)
@@ -130,6 +133,8 @@ app.include_router(sessions.router)
 app.include_router(chat.router)
 app.include_router(hooks.router)
 app.include_router(logs.router)
+app.include_router(providers.router)
+app.include_router(settings.router)
 
 
 # ---------------------------------------------------------------------------

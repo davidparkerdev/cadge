@@ -1,7 +1,7 @@
 """Lightweight request metrics middleware.
 
 Pushes request metrics to Observatory (fire-and-forget).
-No local storage — Nexus v2 is a dumb UI.
+No local storage — Cadge is a dumb UI.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Fire-and-forget push client for Observatory.
 
-Nexus v2 is a dumb UI — all observability data goes to Observatory.
-Failures are logged and silently ignored (never block Nexus v2 operations).
+Cadge is a dumb UI — all observability data goes to Observatory.
+Failures are logged and silently ignored (never block Cadge operations).
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def push_session_event(
     duration_seconds: float | None = None,
 ) -> None:
     """Push a session lifecycle event to Observatory."""
-    push_event("/api/observatory/stargate/ingest/session", {
+    push_event("/api/observatory/cadge/ingest/session", {
         "session_id": session_id,
         "event_type": event_type,
         "title": title,
@@ -129,7 +129,7 @@ def push_hook_event(
     summary: str | None = None,
 ) -> None:
     """Push a hook event to Observatory."""
-    push_event("/api/observatory/stargate/ingest/hook", {
+    push_event("/api/observatory/cadge/ingest/hook", {
         "session_id": session_id,
         "event_type": event_type,
         "tool_name": tool_name,
@@ -147,7 +147,7 @@ def push_request_metric(
     slow: bool = False,
 ) -> None:
     """Push a request metric to Observatory."""
-    push_event("/api/observatory/stargate/ingest/request", {
+    push_event("/api/observatory/cadge/ingest/request", {
         "request_id": request_id,
         "method": method,
         "path": path,
@@ -166,7 +166,7 @@ def push_frontend_error(
 ) -> None:
     """Push a frontend error/warn to Observatory via the hook event ingestion endpoint.
 
-    Uses the existing stargate_hook_events table with:
+    Uses the existing cadge_hook_events table with:
     - session_id: "frontend" (constant — not tied to a Claude session)
     - event_type: "frontend_error" or "frontend_warn"
     - tool_name: the logger category/component

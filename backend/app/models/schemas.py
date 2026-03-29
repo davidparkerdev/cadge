@@ -1,4 +1,4 @@
-"""Pydantic models for Nexus v2 API."""
+"""Pydantic models for Cadge API."""
 
 from __future__ import annotations
 
@@ -15,8 +15,10 @@ from pydantic import BaseModel, Field, field_validator
 class SessionCreate(BaseModel):
     title: Optional[str] = None
     role: Optional[str] = None          # e.g. "coding", "product", "writing"
-    project_name: Optional[str] = None  # e.g. "nexus-v2"
-    project_dir: Optional[str] = None   # e.g. "services/nexus-v2"
+    project_name: Optional[str] = None  # e.g. "cadge"
+    project_dir: Optional[str] = None   # e.g. "services/cadge"
+    provider_id: str = "claude-code"    # e.g. "claude-code", "lm-studio"
+    model: Optional[str] = None         # e.g. "llama-3.1-8b-instruct"
 
 
 class SessionUpdate(BaseModel):
@@ -31,6 +33,8 @@ class SessionResponse(BaseModel):
     role: Optional[str] = None
     project_name: Optional[str] = None
     project_dir: Optional[str] = None
+    provider_id: str = "claude-code"
+    model: Optional[str] = None
     created_at: str
     updated_at: str
 

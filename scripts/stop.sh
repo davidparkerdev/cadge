@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stargate Stop - kills any running Stargate processes by port
+# Cadge Stop - kills any running Cadge processes by port
 
 API_PORT=33401
 UI_PORT=33400
@@ -22,7 +22,7 @@ for port in $API_PORT $UI_PORT; do
 done
 
 if [ "$stopped" -eq 0 ]; then
-    echo -e "${GREEN}No Stargate processes running.${NC}"
+    echo -e "${GREEN}No Cadge processes running.${NC}"
 else
-    echo -e "${GREEN}Stargate stopped.${NC}"
+    echo -e "${GREEN}Cadge stopped.${NC}"
 fi

@@ -1,7 +1,7 @@
 """SQLite persistence for sessions, messages, and hook events.
 
 Uses aiosqlite for async operations. The database file lives at
-backend/nexus_v2.db (next to the app/ package).
+backend/cadge.db (next to the app/ package).
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import aiosqlite
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent / "nexus_v2.db"
+DB_PATH = Path(__file__).resolve().parent.parent.parent / "cadge.db"
 
 # ---------------------------------------------------------------------------
 # Initialization
@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     role            TEXT,
     project_name    TEXT,
     project_dir     TEXT,
+    provider_id     TEXT NOT NULL DEFAULT 'claude-code',
+    model           TEXT,
+    provider_session_id TEXT,
+    provider_initialized BOOLEAN NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -115,6 +119,24 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+
+        # Migrate: add provider columns to sessions
+        for col, default in [
+            ("provider_id", "'claude-code'"),
+            ("model", "NULL"),
+            ("provider_session_id", "NULL"),
+            ("provider_initialized", "0"),
+        ]:
+            try:
+                if default == "NULL":
+                    await db.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT")
+                elif default == "0":
+                    await db.execute(f"ALTER TABLE sessions ADD COLUMN {col} BOOLEAN NOT NULL DEFAULT 0")
+                else:
+                    await db.execute(f"ALTER TABLE sessions ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                await db.commit()
+            except Exception:
+                pass  # Column already exists
 
         # Migrate: add summary column to messages
         try:
@@ -200,23 +222,32 @@ async def create_session(
     role: Optional[str] = None,
     project_name: Optional[str] = None,
     project_dir: Optional[str] = None,
+    provider_id: str = "claude-code",
+    model: Optional[str] = None,
 ) -> dict:
     now = _now()
+    provider_session_id = _uuid()
     session = {
         "id": _uuid(),
         "title": title or "New Session",
-        "claude_session_id": _uuid(),
+        "claude_session_id": provider_session_id,
         "status": "active",
         "role": role,
         "project_name": project_name,
         "project_dir": project_dir,
+        "provider_id": provider_id,
+        "model": model,
+        "provider_session_id": provider_session_id,
+        "provider_initialized": False,
         "created_at": now,
         "updated_at": now,
     }
     async with _connect_db() as db:
         await db.execute(
-            """INSERT INTO sessions (id, title, claude_session_id, status, role, project_name, project_dir, created_at, updated_at)
-               VALUES (:id, :title, :claude_session_id, :status, :role, :project_name, :project_dir, :created_at, :updated_at)""",
+            """INSERT INTO sessions (id, title, claude_session_id, status, role, project_name, project_dir,
+               provider_id, model, provider_session_id, provider_initialized, created_at, updated_at)
+               VALUES (:id, :title, :claude_session_id, :status, :role, :project_name, :project_dir,
+               :provider_id, :model, :provider_session_id, :provider_initialized, :created_at, :updated_at)""",
             session,
         )
         await db.commit()
@@ -290,6 +321,16 @@ async def mark_claude_initialized(session_id: str) -> None:
     async with _connect_db() as db:
         await db.execute(
             "UPDATE sessions SET claude_initialized = 1 WHERE id = ?",
+            (session_id,),
+        )
+        await db.commit()
+
+
+async def mark_provider_initialized(session_id: str) -> None:
+    """Mark that this session's provider has been initialized (first call done)."""
+    async with _connect_db() as db:
+        await db.execute(
+            "UPDATE sessions SET provider_initialized = 1, claude_initialized = 1 WHERE id = ?",
             (session_id,),
         )
         await db.commit()
