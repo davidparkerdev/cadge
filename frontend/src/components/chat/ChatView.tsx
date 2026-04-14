@@ -8,6 +8,8 @@ import { MessageList } from './MessageList'
 import { ChatInput } from './ChatInput'
 import { MobileActionBar } from './MobileActionBar'
 import { AgentStatusBar } from './AgentStatusBar'
+import { FocusIndicator } from './FocusIndicator'
+import { StatsPanel } from './StatsPanel'
 
 export function ChatView() {
   const { id } = useParams<{ id: string }>()
@@ -27,6 +29,9 @@ export function ChatView() {
     streamingThinking,
     summary,
     lastSeq,
+    focus,
+    stats,
+    tokenSamples,
   } = useEventStream(id)
 
   const [isCancelling, setIsCancelling] = useState(false)
@@ -251,6 +256,9 @@ export function ChatView() {
       )}
 
       {agents.length > 0 && <AgentStatusBar agents={agents} />}
+
+      {(focus || isStreaming) && <FocusIndicator focus={focus} isStreaming={isStreaming} />}
+      {(stats || isStreaming) && <StatsPanel stats={stats} samples={tokenSamples} isStreaming={isStreaming} />}
 
       {error && (
         <div className="px-4 py-2 text-center">

@@ -17,7 +17,7 @@ class SessionCreate(BaseModel):
     role: Optional[str] = None          # e.g. "coding", "product", "writing"
     project_name: Optional[str] = None  # e.g. "cadge"
     project_dir: Optional[str] = None   # e.g. "services/cadge"
-    provider_id: str = "claude-code"    # e.g. "claude-code", "lm-studio"
+    provider_id: str = "claude-code"    # e.g. "claude-code", "mlx-server"
     model: Optional[str] = None         # e.g. "llama-3.1-8b-instruct"
 
 

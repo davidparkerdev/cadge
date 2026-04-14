@@ -21,6 +21,8 @@ export function SessionList() {
     role?: string
     projectName?: string
     projectDir?: string
+    providerId?: string
+    model?: string
   }) => {
     try {
       const session = await create(config)

@@ -17,7 +17,7 @@ Contributions are welcome. Here's how to get started.
 
 ## Adding a provider
 
-The most useful contributions are new LLM provider integrations. See `backend/app/services/providers/base.py` for the interface and the existing Claude Code / LM Studio providers as reference.
+The most useful contributions are new LLM provider integrations. See `backend/app/services/providers/base.py` for the interface and the existing Claude Code / MLX Server providers as reference.
 
 ## License
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { API_URL } from '../config'
-import type { AgentInfo } from '../api/types'
+import type { AgentInfo, FocusSnapshot, StatsSnapshot } from '../api/types'
 import { log } from '../lib/logger'
 
 interface ToolActivity {
@@ -9,6 +9,11 @@ interface ToolActivity {
   status: 'running' | 'completed'
   startSeq: number
   endSeq?: number
+}
+
+export interface TokenSample {
+  t: number
+  tokensPerSecond: number
 }
 
 interface UseEventStreamReturn {
@@ -22,6 +27,9 @@ interface UseEventStreamReturn {
   streamingThinking: string
   summary: string | null
   lastSeq: number
+  focus: FocusSnapshot | null
+  stats: StatsSnapshot | null
+  tokenSamples: TokenSample[]
 }
 
 export function useEventStream(
@@ -36,6 +44,9 @@ export function useEventStream(
   const [streamingThinking, setStreamingThinking] = useState('')
   const [summary, setSummary] = useState<string | null>(null)
   const [lastSeq, setLastSeq] = useState(0)
+  const [focus, setFocus] = useState<FocusSnapshot | null>(null)
+  const [stats, setStats] = useState<StatsSnapshot | null>(null)
+  const [tokenSamples, setTokenSamples] = useState<TokenSample[]>([])
 
   const contentRef = useRef('')
   const thinkingRef = useRef('')
@@ -84,6 +95,9 @@ export function useEventStream(
       setSummary(null)
       setIsStreaming(false)
       setLastSeq(0)
+      setFocus(null)
+      setStats(null)
+      setTokenSamples([])
     }
 
     const connectSSE = (since: number) => {
@@ -131,7 +145,42 @@ export function useEventStream(
               setAgents([])
               setSummary(null)
               setIsStreaming(true)
+              setFocus(null)
+              setStats(null)
+              setTokenSamples([])
               break
+
+            case 'focus_update': {
+              const d = msg.data as Record<string, unknown>
+              setFocus({
+                summary: (d.summary as string) || '',
+                kind: d.kind as FocusSnapshot['kind'],
+                detail: d.detail as string | undefined,
+                updatedAt: typeof d.updated_at === 'number' ? d.updated_at : Date.now() / 1000,
+              })
+              break
+            }
+
+            case 'stats_update': {
+              const d = msg.data as Record<string, unknown>
+              const snap: StatsSnapshot = {
+                contextUsed: d.context_used as number | undefined,
+                contextMax: d.context_max as number | undefined,
+                tokensIn: d.tokens_in as number | undefined,
+                tokensOut: d.tokens_out as number | undefined,
+                tokensPerSecond: d.tokens_per_second as number | undefined,
+                elapsedSeconds: d.elapsed_seconds as number | undefined,
+                model: d.model as string | undefined,
+              }
+              setStats(snap)
+              if (typeof snap.tokensPerSecond === 'number') {
+                setTokenSamples(prev => {
+                  const next = [...prev, { t: Date.now(), tokensPerSecond: snap.tokensPerSecond! }]
+                  return next.length > 60 ? next.slice(next.length - 60) : next
+                })
+              }
+              break
+            }
 
             case 'content_delta': {
               const text =
@@ -339,5 +388,8 @@ export function useEventStream(
     streamingThinking,
     summary,
     lastSeq,
+    focus,
+    stats,
+    tokenSamples,
   }
 }

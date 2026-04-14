@@ -19,11 +19,15 @@ async def create_session(body: SessionCreate | None = None):
     role = body.role if body else None
     project_name = body.project_name if body else None
     project_dir = body.project_dir if body else None
+    provider_id = body.provider_id if body else "claude-code"
+    model = body.model if body else None
     session = await session_store.create_session(
         title=title,
         role=role,
         project_name=project_name,
         project_dir=project_dir,
+        provider_id=provider_id,
+        model=model,
     )
     return session
 

@@ -8,7 +8,9 @@ Built as a daily-driver tool, not a demo. If you use AI coding agents heavily, C
 
 ## What it does
 
-- **Multi-provider sessions** -- Claude Code, LM Studio, and any OpenAI-compatible backend. Pick per session.
+- **Multi-provider sessions** -- Claude Code CLI and the local MLX Server (Apple Silicon). Pick per session.
+- **Agentic tool suite (MLX)** -- Native OpenAI tool-calling with a built-in catalog (read_file, write_file, bash, grep, ls, glob). Runs a full agent loop inside Cadge.
+- **Focus tracker + rich stats** -- Live per-turn focus indicator and a stats panel with context gauge, token counters, and tokens/sec.
 - **Real-time streaming** -- SSE-based, no polling. Watch agents think, use tools, and spawn sub-agents live.
 - **Session persistence** -- SQLite-backed. Full message history, event logs, and cross-device handoff.
 - **Role-based prompting** -- 12 built-in roles (coding, product, QA, bug-fixing, etc.) shape agent behavior.
@@ -42,8 +44,7 @@ Backend runs on port 33401, frontend on 33400.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CADGE_PROJECT_ROOT` | repo root | Base path for resolving project directories |
-| `LM_STUDIO_URL` | `http://localhost:1234` | LM Studio API endpoint |
-| `LM_STUDIO_API_KEY` | (none) | Optional LM Studio auth key |
+| `MLX_SERVER_URL` | `http://localhost:33339` | MLX Server API endpoint |
 
 ## Adding providers
 

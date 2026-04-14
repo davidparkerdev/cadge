@@ -41,6 +41,12 @@ TOOL_END = "tool_end"
 AGENT_SPAWN = "agent_spawn"
 AGENT_COMPLETE = "agent_complete"
 
+# Focus tracker (what the agent is currently doing)
+FOCUS_UPDATE = "focus_update"
+
+# Token / context stats (streamed periodically during generation)
+STATS_UPDATE = "stats_update"
+
 # Raw/passthrough events from Claude CLI
 RAW_EVENT = "raw_event"
 

@@ -42,6 +42,51 @@ export interface AgentInfo {
   isError?: boolean
 }
 
+export interface ProviderInfo {
+  id: string
+  name: string
+  description: string
+  supports_tools: boolean
+  supports_thinking: boolean
+  supports_images: boolean
+  supports_agents: boolean
+  requires_api_key: boolean
+  default_model?: string | null
+  config?: Record<string, unknown>
+}
+
+export interface ProviderModel {
+  id: string
+  name: string
+  context_length?: number | null
+  owned_by?: string | null
+}
+
+export interface ProviderStatus {
+  status: 'available' | 'unavailable' | 'error'
+  detail?: string
+  version?: string
+  base_url?: string
+  model_count?: number
+}
+
+export interface FocusSnapshot {
+  summary: string
+  kind?: 'thinking' | 'tool' | 'response' | 'idle'
+  detail?: string
+  updatedAt?: number
+}
+
+export interface StatsSnapshot {
+  contextUsed?: number
+  contextMax?: number
+  tokensIn?: number
+  tokensOut?: number
+  tokensPerSecond?: number
+  elapsedSeconds?: number
+  model?: string
+}
+
 export type StreamEvent = {
   type:
     | 'start'
@@ -58,6 +103,8 @@ export type StreamEvent = {
     | 'ping'
     | 'agent_spawn'
     | 'agent_complete'
+    | 'focus_update'
+    | 'stats_update'
   subtype?: string
   streaming?: boolean
   session_id?: string

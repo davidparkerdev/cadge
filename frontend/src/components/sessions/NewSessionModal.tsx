@@ -17,6 +17,7 @@ import {
 import { cn } from '../../lib/cn'
 import { roles } from '../../data/roles'
 import { useProjects, type Project } from '../../hooks/useProjects'
+import { useProviders, useProviderModels } from '../../hooks/useProviders'
 import { ProjectPicker } from './ProjectPicker'
 
 interface NewSessionModalProps {
@@ -27,6 +28,8 @@ interface NewSessionModalProps {
     role?: string
     projectName?: string
     projectDir?: string
+    providerId?: string
+    model?: string
   }) => void
 }
 
@@ -46,14 +49,19 @@ const roleIconMap: Record<string, React.ComponentType<{ className?: string }>> =
 
 export function NewSessionModal({ isOpen, onClose, onCreate }: NewSessionModalProps) {
   const { projects, isLoading: projectsLoading } = useProjects()
+  const { providers } = useProviders()
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [selectedRole, setSelectedRole] = useState<string | null>(null)
   const [sessionName, setSessionName] = useState('')
   const [userEditedName, setUserEditedName] = useState(false)
   const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false)
+  const [selectedProviderId, setSelectedProviderId] = useState<string>('claude-code')
+  const [selectedModel, setSelectedModel] = useState<string>('')
   const nameInputRef = useRef<HTMLInputElement>(null)
 
-  // Reset state when modal opens
+  const providerForModels = selectedProviderId === 'mlx-server' ? 'mlx-server' : null
+  const { models: providerModels, isLoading: modelsLoading } = useProviderModels(providerForModels)
+
   useEffect(() => {
     if (isOpen) {
       setSelectedProject(null)
@@ -61,8 +69,14 @@ export function NewSessionModal({ isOpen, onClose, onCreate }: NewSessionModalPr
       setSessionName('')
       setUserEditedName(false)
       setIsProjectPickerOpen(false)
+      setSelectedProviderId('claude-code')
+      setSelectedModel('')
     }
   }, [isOpen])
+
+  useEffect(() => {
+    setSelectedModel('')
+  }, [selectedProviderId])
 
   const handleProjectSelect = (project: Project) => {
     setSelectedProject(project)
@@ -91,6 +105,8 @@ export function NewSessionModal({ isOpen, onClose, onCreate }: NewSessionModalPr
       role: selectedRole || undefined,
       projectName: selectedProject?.name || undefined,
       projectDir: selectedProject?.dir || undefined,
+      providerId: selectedProviderId || undefined,
+      model: selectedModel.trim() || undefined,
     })
   }
 
@@ -128,6 +144,69 @@ export function NewSessionModal({ isOpen, onClose, onCreate }: NewSessionModalPr
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
+          {/* Provider + Model */}
+          <div className="space-y-2">
+            <span className="block text-xs font-medium text-text-secondary uppercase tracking-wide">
+              Provider
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              {(providers.length > 0
+                ? providers
+                : [
+                    { id: 'claude-code', name: 'Claude Code' },
+                    { id: 'mlx-server', name: 'MLX Server' },
+                  ]
+              ).map((p) => {
+                const active = selectedProviderId === p.id
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => setSelectedProviderId(p.id)}
+                    className={cn(
+                      'rounded-xl px-3 py-3 text-sm font-medium text-left transition-colors touch-manipulation',
+                      active
+                        ? 'bg-green-500/20 text-green-400 ring-2 ring-green-500/50'
+                        : 'bg-surface-secondary border border-border text-text-primary active:bg-surface-tertiary'
+                    )}
+                  >
+                    <div className="text-sm font-semibold">{p.name}</div>
+                    <div className="text-xs text-text-secondary mt-0.5">
+                      {p.id === 'claude-code' ? 'Claude CLI (cloud)' : 'Local MLX (Apple Silicon)'}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            {selectedProviderId === 'mlx-server' && (
+              <div className="pt-1 space-y-1">
+                <span className="block text-xs font-medium text-text-secondary">Model</span>
+                {providerModels.length > 0 ? (
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className={cn(
+                      'w-full rounded-xl px-4 py-3 text-sm',
+                      'bg-surface-secondary border border-border text-text-primary',
+                      'focus:outline-none focus:border-accent/50 focus:ring-1 focus:ring-accent/30'
+                    )}
+                  >
+                    <option value="">Default (first loaded)</option>
+                    {providerModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.name}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="rounded-xl bg-amber-500/10 border border-amber-500/20 px-3 py-2 text-xs text-amber-400">
+                    {modelsLoading
+                      ? 'Checking MLX Server...'
+                      : 'No models loaded on the MLX Server. Start it and load a model, then try again.'}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Project Picker */}
           <div className="space-y-2">
             <span className="block text-xs font-medium text-text-secondary uppercase tracking-wide">

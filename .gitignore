@@ -11,4 +11,5 @@ __pycache__/
 .DS_Store
 ios/
 TEMP_TIX/
+test-results/
 .env

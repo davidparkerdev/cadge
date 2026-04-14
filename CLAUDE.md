@@ -1,6 +1,6 @@
 # Cadge
 
-Provider-agnostic AI development companion UI. Supports multiple LLM backends as first-class citizens: Claude Code CLI sessions and LM Studio (OpenAI-compatible local models). Provides session management, streaming chat, and hook event monitoring.
+Provider-agnostic AI development companion UI. Supports two LLM backends as first-class citizens: Claude Code CLI sessions and the local MLX Server (Apple Silicon, OpenAI-compatible). Provides session management, streaming chat, per-turn focus tracking, rich stats, and an agentic tool suite for MLX (read_file, write_file, bash, grep, ls, glob).
 
 ## Development Setup
 
@@ -29,8 +29,7 @@ task start     # Start both API and UI
 ## Configuration
 
 - **`CADGE_PROJECT_ROOT`** -- Environment variable for resolving relative `project_dir` paths when creating sessions. Defaults to the cadge repository root when not set. In the TheLab monorepo, set this to the monorepo root so project paths resolve correctly.
-- **`LM_STUDIO_URL`** -- Base URL for LM Studio API. Defaults to `http://localhost:1234`.
-- **`LM_STUDIO_API_KEY`** -- Optional API key for LM Studio (if auth is enabled).
+- **`MLX_SERVER_URL`** -- Base URL for the local MLX Server. Defaults to `http://localhost:33339`.
 
 ## Provider System
 
@@ -39,7 +38,7 @@ Cadge uses a provider abstraction layer (`app/services/providers/`) to support m
 | Provider | ID | How it works |
 |---|---|---|
 | Claude Code | `claude-code` | Spawns `claude` CLI subprocesses with `--output-format stream-json` |
-| LM Studio | `lm-studio` | HTTP streaming to OpenAI-compatible API (`/v1/chat/completions`) |
+| MLX Server | `mlx-server` | HTTP streaming to the local MLX Server (`/v1/chat/completions`) with native OpenAI tool-calling + an agent loop |
 
 Each session stores its `provider_id` and `model`. The provider is selected at session creation time.
 
@@ -77,7 +76,7 @@ Provider-agnostic architecture with pluggable LLM backends:
 
 - **Provider layer:** `app/services/providers/` with `BaseProvider` ABC, registry, and per-provider implementations
 - **Claude Code provider:** Spawns `claude -p` subprocess, parses `--output-format stream-json` stdout
-- **LM Studio provider:** HTTP streaming via `httpx` to `/v1/chat/completions` (OpenAI-compatible)
+- **MLX Server provider:** HTTP streaming via `httpx` to `/v1/chat/completions` (OpenAI-compatible); runs an agent loop that executes tools locally and feeds results back until the model stops requesting tools
 - **Facade:** `claude_runner.py` delegates to the correct provider based on session's `provider_id`
 - **Streaming:** All providers emit normalized events through the same SSE pipeline (no DB polling)
 - **Session state:** Each session stores `provider_id` and `model` alongside existing fields

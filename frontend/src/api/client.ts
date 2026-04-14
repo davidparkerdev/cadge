@@ -1,5 +1,5 @@
 import { API_URL } from '../config'
-import type { Session, Message } from './types'
+import type { Session, Message, ProviderInfo, ProviderModel, ProviderStatus } from './types'
 import { log } from '../lib/logger'
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -44,6 +44,8 @@ export interface CreateSessionOptions {
   role?: string
   projectName?: string
   projectDir?: string
+  providerId?: string
+  model?: string
 }
 
 export async function createSession(options?: CreateSessionOptions): Promise<Session> {
@@ -52,6 +54,8 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
   if (options?.role) body.role = options.role
   if (options?.projectName) body.project_name = options.projectName
   if (options?.projectDir) body.project_dir = options.projectDir
+  if (options?.providerId) body.provider_id = options.providerId
+  if (options?.model) body.model = options.model
   return request<Session>('/api/sessions', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -87,5 +91,32 @@ export async function sendMessage(
 export async function cancelSession(sessionId: string): Promise<void> {
   await request<void>(`/api/sessions/${sessionId}/cancel`, {
     method: 'POST',
+  })
+}
+
+// Providers
+
+export async function listProviders(): Promise<ProviderInfo[]> {
+  return request<ProviderInfo[]>('/api/providers')
+}
+
+export async function getProviderModels(providerId: string): Promise<ProviderModel[]> {
+  return request<ProviderModel[]>(`/api/providers/${providerId}/models`)
+}
+
+export async function getProviderStatus(providerId: string): Promise<ProviderStatus> {
+  return request<ProviderStatus>(`/api/providers/${providerId}/status`)
+}
+
+// Settings
+
+export async function getSettings(): Promise<Record<string, unknown>> {
+  return request<Record<string, unknown>>('/api/settings')
+}
+
+export async function updateSetting(key: string, value: unknown): Promise<void> {
+  await request<void>('/api/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ [key]: value }),
   })
 }
