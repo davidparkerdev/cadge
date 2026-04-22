@@ -68,4 +68,9 @@ export default defineConfig({
       'Cache-Control': 'no-store',
     },
   },
+  preview: {
+    port: 33400,
+    host: true,
+    allowedHosts: ['.taild30c55.ts.net'],
+  },
 })
