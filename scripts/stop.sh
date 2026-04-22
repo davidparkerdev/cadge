@@ -10,8 +10,14 @@ NC='\033[0m'
 
 stopped=0
 
+# Uses netstat (PF_ROUTE sysctls), not lsof. lsof on macOS 26 has triggered
+# reproducible kernel panics (NULL+0x48 in proc/file-table iteration).
 for port in $API_PORT $UI_PORT; do
-    pids=$(lsof -t -i :"$port" -sTCP:LISTEN 2>/dev/null || true)
+    pids=$(netstat -anv -p tcp 2>/dev/null \
+        | awk -v p="$port" '$0 ~ /LISTEN/ && $4 ~ ("\\."p"$") {
+            for (i=1; i<=NF; i++) if ($i ~ /:[0-9]+$/) { n=split($i,a,":"); print a[n]; break }
+          }' \
+        | sort -u)
     if [ -n "$pids" ]; then
         for pid in $pids; do
             kill "$pid" 2>/dev/null

@@ -43,13 +43,13 @@ if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
     exit 1
 fi
 
-# Check ports are free
-if lsof -i :"$API_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+# Check ports are free (nc -z uses a safe kernel path; lsof has triggered macOS kernel panics)
+if nc -z 127.0.0.1 "$API_PORT" >/dev/null 2>&1; then
     echo -e "${RED}Port $API_PORT is already in use.${NC} Run ./scripts/stop.sh first."
     exit 1
 fi
 
-if lsof -i :"$UI_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+if nc -z 127.0.0.1 "$UI_PORT" >/dev/null 2>&1; then
     echo -e "${RED}Port $UI_PORT is already in use.${NC} Run ./scripts/stop.sh first."
     exit 1
 fi
