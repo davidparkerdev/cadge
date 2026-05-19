@@ -8,7 +8,7 @@ import os
 import signal
 import tempfile
 import time
-from typing import Optional
+from typing import Any, Optional
 
 from app.services.event_store import (
     append_event,
@@ -34,6 +34,8 @@ logger = logging.getLogger(__name__)
 
 _active_processes: dict[str, Optional[asyncio.subprocess.Process]] = {}
 _session_locks: dict[str, asyncio.Lock] = {}
+_pty_active: dict[str, Any] = {}
+_CADGE_ENGINE = os.getenv("CADGE_ENGINE", "sdk")
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PROJECT_ROOT = os.environ.get("CADGE_PROJECT_ROOT", os.path.dirname(_BACKEND_DIR))
@@ -127,16 +129,25 @@ class ClaudeCodeProvider(BaseProvider):
             return {"status": "error", "detail": str(e)}
 
     def is_streaming(self, session_id: str) -> bool:
-        return session_id in _active_processes
+        return session_id in _active_processes or session_id in _pty_active
 
     def active_count(self) -> int:
-        return len(_active_processes)
+        return len(_active_processes) + len(_pty_active)
 
     def cleanup_session(self, session_id: str) -> None:
         _session_locks.pop(session_id, None)
         _active_processes.pop(session_id, None)
+        _pty_active.pop(session_id, None)
 
     async def cancel(self, session_id: str) -> bool:
+        if session_id in _pty_active:
+            proc = _pty_active.pop(session_id)
+            if proc is not None:
+                await proc.shutdown(grace=3.0)
+            session_broker.publish(session_id, {"type": "cancelled", "session_id": session_id})
+            await append_event(session_id, STREAM_CANCELLED, {})
+            push_session_event(session_id=session_id, event_type="cancel", error="Cancelled by user")
+            return True
         if session_id not in _active_processes:
             return False
         proc = _active_processes.get(session_id)
@@ -171,6 +182,358 @@ class ClaudeCodeProvider(BaseProvider):
         async with lock:
             await self._run_claude(session_id, prompt, images)
 
+    async def _run_claude_pty(
+        self,
+        session_id: str,
+        prompt: str,
+        images: Optional[list[str]] = None,
+        _retry_count: int = 0,
+    ) -> None:
+        """PTY engine: spawns claude as the interactive TUI (entrypoint=cli, subscription-billed)."""
+        from app.services.providers.pty_runner import PtyProcess
+
+        session = await get_session(session_id)
+        if not session:
+            logger.error("_run_claude_pty: unknown session %s", session_id)
+            return
+
+        provider_session_id = session.get("provider_session_id") or session.get("claude_session_id")
+        role = session.get("role")
+        project_dir = session.get("project_dir")
+        project_name = session.get("project_name")
+
+        push_session_event(
+            session_id=session_id,
+            event_type="start",
+            title=session.get("title", ""),
+            role=role,
+            project_name=project_name,
+            project_dir=project_dir,
+        )
+
+        _start_mono = time.monotonic()
+        original_prompt = prompt
+        is_first_message = (
+            not session.get("provider_initialized", False)
+            and not session.get("claude_initialized", False)
+        )
+
+        if role and role in ROLE_PROMPTS and is_first_message:
+            prompt = f"{ROLE_PROMPTS[role]}\n\n{prompt}"
+
+        abs_project_dir: str | None = None
+        if project_dir:
+            candidate = project_dir if os.path.isabs(project_dir) else os.path.join(PROJECT_ROOT, project_dir)
+            if os.path.isdir(candidate):
+                abs_project_dir = candidate
+            else:
+                logger.warning("project_dir %s does not exist, ignoring", project_dir)
+
+        cwd = abs_project_dir or PROJECT_ROOT
+        temp_files: list[str] = []
+        add_dir_args: list[str] = []
+        assistant_msg_id: Optional[str] = None
+        full_content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        thinking_parts: list[str] = []
+        running_agents: dict[str, dict] = {}
+
+        try:
+            _pty_active[session_id] = None
+            session_broker.publish(session_id, {"type": "start", "session_id": session_id})
+            placeholder = await create_message(
+                session_id=session_id, role="assistant", content="",
+                is_complete=False, status="streaming",
+            )
+            assistant_msg_id = placeholder["id"]
+            await append_event(session_id, STREAM_START, {"message_id": assistant_msg_id})
+
+            if images:
+                image_paths: list[str] = []
+                for i, b64 in enumerate(images):
+                    try:
+                        raw_b64 = b64.split(",", 1)[-1] if "," in b64 else b64
+                        data = base64.b64decode(raw_b64)
+                        mime_type = "image/png"
+                        if "," in b64 and ":" in b64:
+                            try:
+                                mime_type = b64.split(";", 1)[0].split(":", 1)[1]
+                            except (IndexError, ValueError):
+                                pass
+                        _EXT_MAP = {
+                            "image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif",
+                            "image/webp": ".webp", "image/heic": ".heic", "image/heif": ".heif",
+                        }
+                        suffix = _EXT_MAP.get(mime_type, ".png")
+                        fd, path = tempfile.mkstemp(suffix=suffix, prefix=f"cadge_pty_img_{i}_")
+                        os.write(fd, data)
+                        os.close(fd)
+                        temp_files.append(path)
+                        image_paths.append(path)
+                    except Exception:
+                        logger.exception("Failed to decode image %d", i)
+                if image_paths:
+                    add_dir_args = ["--add-dir", os.path.dirname(image_paths[0])]
+                    if len(image_paths) == 1:
+                        prompt = (
+                            f"[The user has attached an image. Use the Read tool to view it at: {image_paths[0]}]\n\n"
+                            + prompt
+                        )
+                    else:
+                        paths_list = "\n".join(f"- {p}" for p in image_paths)
+                        prompt = (
+                            f"[The user has attached {len(image_paths)} images. Use the Read tool to view them:\n{paths_list}]\n\n"
+                            + prompt
+                        )
+
+            if session_id not in _pty_active:
+                if assistant_msg_id:
+                    await _delete_message(assistant_msg_id)
+                return
+
+            escaped_cwd_str = os.path.realpath(cwd).replace("/", "-")
+            transcript_file = os.path.join(
+                os.path.expanduser("~"), ".claude", "projects",
+                escaped_cwd_str, f"{provider_session_id}.jsonl",
+            )
+            transcript_offset = 0
+            if not is_first_message and os.path.exists(transcript_file):
+                transcript_offset = os.path.getsize(transcript_file)
+
+            argv = ["claude", "--dangerously-skip-permissions"]
+            if not is_first_message:
+                argv += ["--resume", provider_session_id]
+            else:
+                argv += ["--session-id", provider_session_id]
+            argv += add_dir_args
+            argv.append(prompt)
+
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
+            clean_env["TERM"] = clean_env.get("TERM", "xterm-256color")
+
+            proc = PtyProcess(argv, cwd=cwd, env=clean_env)
+            proc.start()
+            proc.begin_drain()
+            _pty_active[session_id] = proc
+
+            transcript_buf = ""
+            last_save_time = time.monotonic()
+            last_saved_len = 0
+            last_change_time = time.monotonic()
+            PERIODIC_SAVE = 5.0
+            TURN_TIMEOUT_S = 600.0
+
+            def _read_transcript() -> list[dict]:
+                nonlocal transcript_offset, transcript_buf
+                if not os.path.exists(transcript_file):
+                    return []
+                try:
+                    with open(transcript_file, "r", encoding="utf-8", errors="replace") as fh:
+                        fh.seek(transcript_offset)
+                        chunk = fh.read()
+                        transcript_offset = fh.tell()
+                except OSError:
+                    return []
+                transcript_buf += chunk
+                lines = transcript_buf.split("\n")
+                transcript_buf = lines.pop()
+                result = []
+                for ln in lines:
+                    ln = ln.strip()
+                    if not ln:
+                        continue
+                    try:
+                        result.append(json.loads(ln))
+                    except json.JSONDecodeError:
+                        pass
+                return result
+
+            async def _process_new_lines() -> bool:
+                nonlocal last_change_time
+                turn_done = False
+                for data in _read_transcript():
+                    line_type = data.get("type")
+                    if line_type == "system":
+                        if data.get("subtype") == "turn_duration":
+                            turn_done = True
+                        ep = data.get("entrypoint")
+                        if ep:
+                            logger.info("PTY cadge entrypoint=%s session=%s", ep, session_id)
+                        continue
+                    if line_type == "assistant":
+                        msg = data.get("message", {})
+                        content = msg.get("content", [])
+                        if isinstance(content, str):
+                            content = [{"type": "text", "text": content}]
+                        for blk in content:
+                            if not isinstance(blk, dict):
+                                continue
+                            bt = blk.get("type")
+                            if bt == "text":
+                                text = blk.get("text", "")
+                                if text:
+                                    full_content_parts.append(text)
+                                    session_broker.publish(session_id, {"type": "content_block_delta", "delta": {"type": "text_delta", "text": text}})
+                                    await append_event(session_id, CONTENT_DELTA, {"text": text})
+                                    last_change_time = time.monotonic()
+                            elif bt == "thinking":
+                                t = blk.get("thinking", "")
+                                if t:
+                                    thinking_parts.append(t)
+                                    await append_event(session_id, THINKING_DELTA, {"text": t})
+                                    last_change_time = time.monotonic()
+                            elif bt == "tool_use":
+                                tool_name = blk.get("name", "")
+                                tool_id = blk.get("id", "")
+                                tool_input = blk.get("input", {})
+                                tool_calls.append({"type": "tool_use", "id": tool_id, "name": tool_name, "input": tool_input})
+                                await append_event(session_id, TOOL_START, {"tool_name": tool_name, "tool_id": tool_id})
+                                last_change_time = time.monotonic()
+                                if tool_name == "Task":
+                                    agent_info = {
+                                        "toolUseId": tool_id,
+                                        "description": tool_input.get("description", "Sub-agent task"),
+                                        "subagentType": tool_input.get("subagent_type", "Task"),
+                                        "prompt": tool_input.get("prompt", ""),
+                                    }
+                                    running_agents[tool_id] = agent_info
+                                    session_broker.publish(session_id, {"type": "agent_spawn", **agent_info})
+                                    await append_event(session_id, AGENT_SPAWN, {
+                                        "tool_use_id": tool_id,
+                                        "description": tool_input.get("description", "Sub-agent task"),
+                                        "subagent_type": tool_input.get("subagent_type", "Task"),
+                                    })
+                    elif line_type == "user":
+                        msg = data.get("message", {})
+                        content = msg.get("content", [])
+                        if isinstance(content, list):
+                            for blk in content:
+                                if not isinstance(blk, dict) or blk.get("type") != "tool_result":
+                                    continue
+                                tool_use_id = blk.get("tool_use_id", "")
+                                is_error = blk.get("is_error", False)
+                                tool_name = next((tc["name"] for tc in tool_calls if tc.get("id") == tool_use_id), "")
+                                await append_event(session_id, TOOL_END, {
+                                    "tool_name": tool_name, "tool_id": tool_use_id,
+                                    "status": "error" if is_error else "completed",
+                                })
+                                last_change_time = time.monotonic()
+                                if tool_use_id in running_agents:
+                                    res_content = blk.get("content", "")
+                                    if isinstance(res_content, list):
+                                        res_text = " ".join(b.get("text", "") for b in res_content if isinstance(b, dict) and b.get("type") == "text")
+                                    else:
+                                        res_text = str(res_content or "")
+                                    session_broker.publish(session_id, {
+                                        "type": "agent_complete", "toolUseId": tool_use_id,
+                                        "result": res_text[:500], "isError": is_error,
+                                    })
+                                    await append_event(session_id, AGENT_COMPLETE, {
+                                        "tool_use_id": tool_use_id, "result": res_text[:500], "is_error": is_error,
+                                    })
+                                    running_agents.pop(tool_use_id, None)
+                return turn_done
+
+            while True:
+                if session_id not in _pty_active:
+                    break
+                turn_done = await _process_new_lines()
+                now = time.monotonic()
+                if now - last_save_time >= PERIODIC_SAVE and len(full_content_parts) > last_saved_len and assistant_msg_id:
+                    try:
+                        await update_message(
+                            assistant_msg_id,
+                            content="".join(full_content_parts).strip(),
+                            thinking="".join(thinking_parts) if thinking_parts else None,
+                            tool_calls=json.dumps(tool_calls) if tool_calls else None,
+                        )
+                        last_save_time = now
+                        last_saved_len = len(full_content_parts)
+                    except Exception:
+                        logger.warning("PTY periodic save failed for %s", assistant_msg_id, exc_info=True)
+                if turn_done or proc.exited.is_set():
+                    await _process_new_lines()
+                    break
+                if now - last_change_time > TURN_TIMEOUT_S:
+                    logger.error("PTY turn timed out for session %s", session_id)
+                    await proc.shutdown(grace=3.0)
+                    break
+                await asyncio.sleep(0.25)
+
+            await proc.shutdown(grace=3.0)
+            exit_code = proc.exit_code
+
+            if is_first_message:
+                await mark_provider_initialized(session_id)
+
+            final_content = "".join(full_content_parts).strip()
+            duration_s = round(time.monotonic() - _start_mono, 1)
+            summary_meta = {"engine": "pty-interactive", "duration_s": duration_s}
+            summary = await generate_summary(original_prompt, final_content, tool_calls, metadata=summary_meta)
+
+            if final_content or tool_calls:
+                await update_message(
+                    assistant_msg_id,
+                    content=final_content,
+                    tool_calls=json.dumps(tool_calls) if tool_calls else None,
+                    thinking="".join(thinking_parts) if thinking_parts else None,
+                    is_complete=True, status="complete", summary=summary,
+                )
+            elif exit_code is not None and exit_code != 0:
+                await update_message(
+                    assistant_msg_id,
+                    content=f"[Error] claude exited {exit_code}",
+                    is_complete=True, status="error",
+                )
+            else:
+                await _delete_message(assistant_msg_id)
+
+            for tid in list(running_agents):
+                session_broker.publish(session_id, {"type": "agent_complete", "toolUseId": tid, "result": "", "isError": False})
+            running_agents.clear()
+
+            session_broker.publish(session_id, {"type": "done", "session_id": session_id, "exit_code": exit_code})
+            await append_event(session_id, STREAM_END, {"message_id": assistant_msg_id, "exit_code": exit_code, "summary": summary})
+            await touch_session(session_id)
+            push_session_event(
+                session_id=session_id, event_type="complete",
+                exit_code=exit_code if exit_code is not None else -1,
+                input_tokens=0, output_tokens=0,
+                cost_usd=0.0, duration_seconds=duration_s,
+            )
+
+        except Exception as exc:
+            logger.exception("PTY error for session %s", session_id)
+            await append_event(session_id, STREAM_ERROR, {"error": str(exc)})
+            push_session_event(
+                session_id=session_id, event_type="failure",
+                error=str(exc), duration_seconds=round(time.monotonic() - _start_mono, 1),
+            )
+            if assistant_msg_id:
+                try:
+                    await update_message(
+                        assistant_msg_id,
+                        content="".join(full_content_parts).strip() or "[Error] PTY stream interrupted",
+                        thinking="".join(thinking_parts) if thinking_parts else None,
+                        tool_calls=json.dumps(tool_calls) if tool_calls else None,
+                        is_complete=True, status="error",
+                    )
+                except Exception:
+                    pass
+            session_broker.publish(session_id, {"type": "error", "session_id": session_id, "error": "Internal PTY error"})
+            if is_first_message:
+                try:
+                    await mark_provider_initialized(session_id)
+                except Exception:
+                    pass
+        finally:
+            _pty_active.pop(session_id, None)
+            for path in temp_files:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
     async def _run_claude(
         self,
         session_id: str,
@@ -178,6 +541,9 @@ class ClaudeCodeProvider(BaseProvider):
         images: Optional[list[str]] = None,
         _retry_count: int = 0,
     ) -> None:
+        if _CADGE_ENGINE == "interactive":
+            await self._run_claude_pty(session_id, prompt, images, _retry_count)
+            return
         session = await get_session(session_id)
         if not session:
             logger.error("send_message called for unknown session %s", session_id)
